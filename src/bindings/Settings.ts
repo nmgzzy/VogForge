@@ -12,4 +12,8 @@ ffmpegPath?: string,
 /**
  * 输出目录；None 表示源文件旁的 VidForge 文件夹
  */
-outputDir?: string, namingTemplate: string, keepTree: boolean, conflict: ConflictPolicy, after: AfterAction, hwEncode: boolean, hwDecode: boolean, cpuSlots: number, gpuSlots: number, notify: boolean, language: Lang, theme: ThemePref, };
+outputDir?: string, namingTemplate: string, keepTree: boolean, conflict: ConflictPolicy, after: AfterAction, hwEncode: boolean, hwDecode: boolean, cpuSlots: number, gpuSlots: number, notify: boolean, language: Lang, theme: ThemePref, 
+/**
+ * 首次启动引导已经走完（需求 F-9.5）
+ */
+onboarded: boolean, };

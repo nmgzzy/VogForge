@@ -10,6 +10,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use vidforge_core::config::{ConflictPolicy, Settings};
+use vidforge_core::ffmpeg::probe::ProbeError;
+use vidforge_core::i18n::Lang;
 use vidforge_core::model::{
     Capabilities, EncoderId, EncoderProbe, EventLevel, Job, JobProgressEvent, JobStatus, MediaInfo, QueueItem, QueueOp,
     QueueSnapshot, RateControl, Scenario, TranscodePlan, Vendor,
@@ -177,6 +179,10 @@ struct FakeTools {
     max_live: AtomicUsize,
     suspends: Arc<AtomicUsize>,
     probe: Mutex<Option<MediaInfo>>,
+    /// 数帧（ffprobe -count_packets）返回的帧数与它的闸门：关着时停在输出帧数之前
+    count: Mutex<Option<u64>>,
+    count_gate: Arc<Gate>,
+    counted: AtomicUsize,
 }
 
 fn encoder_of(args: &[String]) -> String {
@@ -200,6 +206,23 @@ impl Tools for FakeTools {
                 gate: self.gate.clone(),
                 clock: self.clock.clone(),
                 fail: err.map(|e| (e, 0)),
+                output: None,
+                passlog: None,
+                live: self.live.clone(),
+            }));
+        }
+        // 校验时数帧：一行输出（帧数），在闸门处可以停住
+        if args.iter().any(|a| a == "-count_packets") {
+            self.counted.fetch_add(1, Ordering::SeqCst);
+            self.live.fetch_add(1, Ordering::SeqCst);
+            return Ok(Box::new(FakeProcess {
+                lines: self.count.lock().unwrap().iter().map(|n| n.to_string()).collect(),
+                hold: None,
+                pos: 0,
+                control,
+                gate: self.count_gate.clone(),
+                clock: self.clock.clone(),
+                fail: None,
                 output: None,
                 passlog: None,
                 live: self.live.clone(),
@@ -233,8 +256,8 @@ impl Tools for FakeTools {
         }))
     }
 
-    fn probe(&self, _ffprobe: &Path, _file: &Path) -> Result<MediaInfo, String> {
-        self.probe.lock().unwrap().clone().ok_or_else(|| "测试里不分析输出".into())
+    fn probe(&self, _ffprobe: &Path, _file: &Path) -> Result<MediaInfo, ProbeError> {
+        self.probe.lock().unwrap().clone().ok_or_else(|| ProbeError::Failed("测试里不分析输出".into()))
     }
 }
 
@@ -307,6 +330,9 @@ fn fake_tools(clock: Arc<FakeClock>) -> Arc<FakeTools> {
         max_live: AtomicUsize::new(0),
         suspends: Arc::default(),
         probe: Mutex::default(),
+        count: Mutex::default(),
+        count_gate: Arc::default(),
+        counted: AtomicUsize::new(0),
     })
 }
 
@@ -322,7 +348,8 @@ impl Harness {
         let tools = fake_tools(clock.clone());
         let sink = Arc::new(Sink::default());
         let store = persist.then(|| dir.join("queue.json"));
-        let queue = Queue::start(QueueDeps { tools: tools.clone(), clock, sink: sink.clone(), store });
+        let queue =
+            Queue::start(QueueDeps { tools: tools.clone(), clock, sink: sink.clone(), store, lang: Lang::ZhCn });
         let settings =
             Settings { output_dir: Some(dir.join("out").to_string_lossy().to_string()), ..Settings::default() };
         Harness { queue, tools, sink, dir: dir.to_path_buf(), settings, _tmp: None }
@@ -389,6 +416,11 @@ fn plan(media: &MediaInfo, enc: EncoderId) -> TranscodePlan {
 
 fn messages(job: &Job, level: EventLevel) -> Vec<String> {
     job.events.iter().filter(|e| e.level == level).map(|e| e.message.clone()).collect()
+}
+
+/// 事件里附带的 ffmpeg 原文（界面上可展开）
+fn details(job: &Job, level: EventLevel) -> Vec<String> {
+    job.events.iter().filter(|e| e.level == level).filter_map(|e| e.detail.clone()).collect()
 }
 
 // ───────────────── 测试 ─────────────────
@@ -511,7 +543,16 @@ fn device_missing_falls_back_along_the_chain_and_disables_the_vendor() {
     let j = h.job(&first);
     assert_eq!(j.encoder_used, EncoderId::HevcQsv);
     let warn = messages(&j, EventLevel::Warn);
-    assert!(warn.iter().any(|m| m.contains("回退到 hevc_qsv") && m.contains("Cannot load nvcuda.dll")), "{warn:?}");
+    assert!(warn.iter().any(|m| m.contains("回退到 hevc_qsv") && m.contains("本次运行不再使用")), "{warn:?}");
+    assert!(!warn.iter().any(|m| m.contains("nvcuda")), "说明里不直接抛原始报错：{warn:?}");
+    let fallback = j.events.iter().find(|e| e.message.contains("回退到 hevc_qsv")).unwrap();
+    assert_eq!(
+        fallback.detail.as_deref(),
+        Some("[hevc_nvenc @ 0x1] Cannot load nvcuda.dll"),
+        "原文放在可展开的 detail"
+    );
+    // 输出读不出来（测试里不分析输出）：完成事件带上 ffprobe 的原文
+    assert_eq!(j.events.last().unwrap().detail.as_deref(), Some("测试里不分析输出"));
     assert!(!h.files().iter().any(|f| f.contains("vidforge-part")));
 
     // 本次运行已停用 NVIDIA：之后的任务不再试它
@@ -547,7 +588,9 @@ fn software_failures_are_final_and_retry_starts_over() {
     let id = h.add(&drone, plan(&drone, EncoderId::Libx265));
     h.wait_status(&id, JobStatus::Failed);
     let j = h.job(&id);
-    assert!(messages(&j, EventLevel::Error)[0].contains("Conversion failed!"));
+    let error = &messages(&j, EventLevel::Error)[0];
+    assert!(error.starts_with("libx265 失败：ffmpeg 执行失败"), "{error}");
+    assert_eq!(details(&j, EventLevel::Error), ["Conversion failed!"]);
     assert_eq!(j.log, ["Conversion failed!"]);
     assert!(h.files().is_empty());
     assert!(h.queue.apply(QueueOp::Remove { id: "nope".into() }).is_err());
@@ -606,6 +649,114 @@ fn hardware_encoding_disabled_in_settings_uses_software() {
 }
 
 #[test]
+fn job_messages_follow_the_interface_language() {
+    let mut h = Harness::new();
+    h.settings.language = Lang::En;
+    h.tools.dry_fail.lock().unwrap().insert("hevc_nvenc".into(), "[hevc_nvenc @ 0x1] Cannot load nvcuda.dll".into());
+    h.ready();
+    let drone = sample("m-drone");
+    *h.tools.probe.lock().unwrap() = Some(drone.clone());
+    let id = h.add(&drone, plan(&drone, EncoderId::HevcNvenc));
+    h.wait_status(&id, JobStatus::Done);
+    let j = h.job(&id);
+    let all: Vec<&str> = j.events.iter().map(|e| e.message.as_str()).collect();
+    let han = |m: &&str| m.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+    assert!(!all.iter().any(han), "全部是英文：{all:?}");
+    assert!(all.iter().any(|m| m.starts_with("Done")), "{all:?}");
+    let report = j.report.as_ref().expect("有校验报告");
+    assert!(report.iter().any(|r| r.label == "Duration"), "校验报告也跟随语言：{report:?}");
+}
+
+#[test]
+fn only_verified_sources_can_go_to_the_trash() {
+    let mut h = Harness::new();
+    let dir = h.dir.join("src");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut m = sample("m-drone");
+    m.path = dir.join("clip.mp4").to_string_lossy().to_string();
+    m.name = "clip.mp4".into();
+    std::fs::write(&m.path, b"source").unwrap();
+    // 输出分析结果与计划一致：校验全部通过
+    let p = plan(&m, EncoderId::Libx265);
+    let mut out = m.clone();
+    out.video[0].codec = "hevc".into();
+    *h.tools.probe.lock().unwrap() = Some(out);
+    h.settings.output_dir = Some(dir.join("out").to_string_lossy().to_string());
+    h.ready();
+    let ok = h.add(&m, p.clone());
+    h.wait_status(&ok, JobStatus::Done);
+    let report = h.job(&ok).report.unwrap();
+    assert!(report.iter().all(|r| r.ok), "{report:?}");
+    assert_eq!(h.queue.trashable_sources(std::slice::from_ref(&ok)), [PathBuf::from(&m.path)]);
+
+    // 同一个源还有排队中的任务：不能动
+    h.queue.apply(QueueOp::SetPaused { paused: true }).unwrap();
+    let pending = h.add(&m, p.clone());
+    assert!(h.queue.trashable_sources(std::slice::from_ref(&ok)).is_empty(), "还有任务要用这个源文件");
+    h.queue.apply(QueueOp::Cancel { id: pending }).unwrap();
+    assert_eq!(h.queue.trashable_sources(std::slice::from_ref(&ok)).len(), 1);
+
+    // 校验没通过、没完成、源文件已不在：都不给
+    *h.tools.probe.lock().unwrap() = None;
+    h.queue.apply(QueueOp::SetPaused { paused: false }).unwrap();
+    let unverified = h.add(&m, p);
+    h.wait_status(&unverified, JobStatus::Done);
+    assert!(h.queue.trashable_sources(std::slice::from_ref(&unverified)).is_empty(), "校验没通过");
+    assert!(h.queue.trashable_sources(&["nope".into()]).is_empty());
+    // 校验之后输出被删掉了：源文件是唯一的一份，不能再动
+    let out = h.job(&ok).output_path;
+    let saved = std::fs::read(&out).unwrap();
+    std::fs::remove_file(&out).unwrap();
+    assert!(h.queue.trashable_sources(std::slice::from_ref(&ok)).is_empty(), "输出已经不在");
+    std::fs::write(&out, saved).unwrap();
+    assert_eq!(h.queue.trashable_sources(std::slice::from_ref(&ok)).len(), 1);
+    std::fs::remove_file(&m.path).unwrap();
+    assert!(h.queue.trashable_sources(&[ok]).is_empty(), "源文件已经不在");
+}
+
+/// 输出没有帧数记录（ffmpeg 写的 MKV）时，校验阶段用可控的进程数帧，结果进报告
+#[test]
+fn frames_are_counted_with_a_controllable_process() {
+    let h = Harness::new();
+    let drone = sample("m-drone");
+    let mut out = drone.clone();
+    out.video[0].frame_count = None;
+    *h.tools.probe.lock().unwrap() = Some(out);
+    *h.tools.count.lock().unwrap() = drone.video[0].frame_count;
+    h.ready();
+    let id = h.add(&drone, plan(&drone, EncoderId::Libx265));
+    h.wait_status(&id, JobStatus::Done);
+    assert_eq!(h.tools.counted.load(Ordering::SeqCst), 1);
+    let report = h.job(&id).report.unwrap();
+    assert!(report.iter().any(|r| r.label == "帧数" && r.ok), "{report:#?}");
+}
+
+/// 核对期间点取消：数帧进程被结束，任务记为取消而不是完成，已写完的输出留着
+#[test]
+fn cancelling_during_verification_stops_the_count_and_keeps_the_output() {
+    let h = Harness::new();
+    let drone = sample("m-drone");
+    let mut out = drone.clone();
+    out.video[0].frame_count = None;
+    *h.tools.probe.lock().unwrap() = Some(out);
+    *h.tools.count.lock().unwrap() = Some(1);
+    h.tools.count_gate.set(true);
+    h.ready();
+    let id = h.add(&drone, plan(&drone, EncoderId::Libx265));
+    let deadline = Instant::now() + WAIT;
+    while h.tools.counted.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "没有开始数帧");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    h.queue.apply(QueueOp::Cancel { id: id.clone() }).unwrap();
+    h.wait_status(&id, JobStatus::Cancelled);
+    let j = h.job(&id);
+    assert!(j.events.last().unwrap().message.contains("没有核对"), "{:?}", j.events);
+    assert!(j.report.is_none());
+    assert!(Path::new(&j.output_path).is_file(), "写完的输出不删");
+}
+
+#[test]
 fn order_moves_and_clear_finished() {
     let h = Harness::new();
     let drone = sample("m-drone");
@@ -633,6 +784,8 @@ fn a_crash_leaves_unfinished_jobs_queued_and_cleans_up() {
         h.wait_status(&id, JobStatus::Running);
         // 模拟崩溃时留下的临时文件；退出时不改任务状态
         let part = format!("{}.vidforge-part", h.job(&id).output_path);
+        // 状态先变为进行中，输出目录随后才由工作线程创建
+        std::fs::create_dir_all(Path::new(&part).parent().unwrap()).unwrap();
         std::fs::write(&part, b"half").unwrap();
         h.queue.shutdown();
         (id, part)

@@ -9,4 +9,9 @@ profile: number,
 /**
  * 8.1 → 1，8.4 → 4，P5 → 0
  */
-blCompatId: number, hasEnhancementLayer: boolean, elType?: ElType, };
+blCompatId: number, hasEnhancementLayer: boolean, elType?: ElType, 
+/**
+ * 首帧带逐帧 RPU（`Dolby Vision RPU Data` 或解析后的 `Dolby Vision Metadata`）。
+ * 只有配置记录、没有 RPU 的流在播放器上不会按杜比视界播放
+ */
+rpu: boolean, };

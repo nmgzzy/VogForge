@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, SlidersHorizontal } from "lucide-react";
+import { tr } from "@/i18n";
 import type { Capabilities, PlanResult, RateControl, RateControlKind, TranscodePlan } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { encoderSupports10bit } from "@/lib/encoders";
@@ -13,19 +14,34 @@ const boxCls =
   "h-8 rounded-md border border-line bg-panel px-2.5 font-mono text-xs text-fg transition-colors hover:border-line-strong focus:border-accent focus:outline-none";
 const inputCls = cn(boxCls, "w-full");
 
-const RC_LABEL: Record<RateControlKind, string> = {
-  quality: "恒定质量",
-  bitrate: "目标码率",
-  capped: "限峰值",
-  two_pass: "两遍",
-};
+function rcLabel(kind: RateControlKind): string {
+  switch (kind) {
+    case "quality":
+      return tr("恒定质量", "Quality");
+    case "bitrate":
+      return tr("目标码率", "Bitrate");
+    case "capped":
+      return tr("限峰值", "Capped");
+    case "two_pass":
+      return tr("两遍", "Two-pass");
+  }
+}
 
-const RC_HINT: Record<RateControlKind, string> = {
-  quality: "按画质编码，体积随画面复杂度变化",
-  bitrate: "按平均码率编码，体积可预测，峰值不超过 1.5 倍",
-  capped: "按画质编码，同时限制峰值码率，适合网络串流",
-  two_pass: "先分析全片再分配码率，体积准确、画质均匀，耗时约 1.7 倍",
-};
+function rcHint(kind: RateControlKind): string {
+  switch (kind) {
+    case "quality":
+      return tr("按画质编码，体积随画面复杂度变化", "Encodes by quality; the size follows scene complexity");
+    case "bitrate":
+      return tr("按平均码率编码，体积可预测，峰值不超过 1.5 倍", "Encodes to an average bitrate with a predictable size; peaks stay under 1.5×");
+    case "capped":
+      return tr("按画质编码，同时限制峰值码率，适合网络串流", "Encodes by quality while capping the peak bitrate, good for streaming");
+    case "two_pass":
+      return tr(
+        "先分析全片再分配码率，体积准确、画质均匀，耗时约 1.7 倍",
+        "Analyzes the whole video before distributing the bitrate: accurate size, even quality, about 1.7× the time",
+      );
+  }
+}
 
 /** 简短描述当前码率控制，用于摘要与提示 */
 export function rateControlSummary(rc: RateControl): string | undefined {
@@ -34,11 +50,11 @@ export function rateControlSummary(rc: RateControl): string | undefined {
     case "quality":
       return undefined;
     case "bitrate":
-      return `平均 ${mbps(rc.kbps)}`;
+      return tr(`平均 ${mbps(rc.kbps)}`, `avg ${mbps(rc.kbps)}`);
     case "capped":
-      return `峰值 ${mbps(rc.kbps)}`;
+      return tr(`峰值 ${mbps(rc.kbps)}`, `peak ${mbps(rc.kbps)}`);
     case "two_pass":
-      return `两遍 · 平均 ${mbps(rc.kbps)}`;
+      return tr(`两遍 · 平均 ${mbps(rc.kbps)}`, `2-pass · avg ${mbps(rc.kbps)}`);
   }
 }
 
@@ -64,9 +80,12 @@ function rcUnavailable(kind: RateControlKind, plan: TranscodePlan, caps: Capabil
     // 自动选择编码器时，引擎会为两遍换成软件编码器
     const sw = caps.encoders.some((e) => e.codec === vp.codec && e.vendor === "software" && e.usable);
     if (vp.encoderAuto && sw) return undefined;
-    return "两遍编码只有软件编码器支持；把编码器改回自动或选择软件编码器";
+    return tr(
+      "两遍编码只有软件编码器支持；把编码器改回自动或选择软件编码器",
+      "Only software encoders support two-pass; set the encoder back to automatic or pick a software encoder",
+    );
   }
-  return `${vp.encoder} 没有"按质量编码 + 限峰值"的模式`;
+  return tr(`${vp.encoder} 没有"按质量编码 + 限峰值"的模式`, `${vp.encoder} has no quality mode with a peak cap`);
 }
 
 /** 以 Mbps 输入码率。输入过程中允许暂时不合法（例如清空），失焦或回车时提交 */
@@ -115,9 +134,13 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
   const encodedAudio = plan.audio.some((t) => t.action === "encode");
   const summary = [
     rateControlSummary(rc),
-    plan.loudnorm ? "响度 -16 LUFS" : undefined,
+    plan.loudnorm ? tr("响度 -16 LUFS", "loudness -16 LUFS") : undefined,
     `${vp.bitDepth}bit`,
-    { all: "全部字幕", text_only: "仅文本字幕", none: "不保留字幕" }[plan.subtitles],
+    {
+      all: tr("全部字幕", "all subtitles"),
+      text_only: tr("仅文本字幕", "text subtitles only"),
+      none: tr("不保留字幕", "no subtitles"),
+    }[plan.subtitles],
     `preset ${vp.preset}`,
     vp.gop ? `GOP ${vp.gop}` : undefined,
   ]
@@ -129,12 +152,16 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex h-10 w-full items-center gap-2 px-4 text-left">
         <ChevronRight className={cn("size-4 text-subtle transition-transform", open && "rotate-90")} />
         <SlidersHorizontal className="size-3.5 text-subtle" />
-        <h2 className="text-[13px] font-semibold">更多参数</h2>
+        <h2 className="text-[13px] font-semibold">{tr("更多参数", "More options")}</h2>
         <span className="ml-auto truncate text-[11px] text-subtle">{summary}</span>
       </button>
       {open && (
         <div className="grid gap-x-5 gap-y-3.5 border-t border-line p-4 md:grid-cols-3">
-          <Field label="色深" hint={can10 ? undefined : `${vp.encoder} 仅 8bit`} className={cn(copy && "pointer-events-none opacity-40")}>
+          <Field
+            label={tr("色深", "Bit depth")}
+            hint={can10 ? undefined : tr(`${vp.encoder} 仅 8bit`, `${vp.encoder} is 8-bit only`)}
+            className={cn(copy && "pointer-events-none opacity-40")}
+          >
             <Segmented<"8" | "10">
               className="w-full"
               value={String(vp.bitDepth) as "8" | "10"}
@@ -150,14 +177,14 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
             />
           </Field>
 
-          <Field label="字幕">
+          <Field label={tr("字幕", "Subtitles")}>
             <Segmented<TranscodePlan["subtitles"]>
               className="w-full"
               value={plan.subtitles}
               options={[
-                { value: "all", label: "全部" },
-                { value: "text_only", label: "仅文本" },
-                { value: "none", label: "不保留" },
+                { value: "all", label: tr("全部", "All") },
+                { value: "text_only", label: tr("仅文本", "Text only") },
+                { value: "none", label: tr("不保留", "None") },
               ]}
               onChange={(s) =>
                 patch((p) => {
@@ -167,17 +194,25 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
             />
           </Field>
 
-          <Field label="响度" hint="两遍测量，只作用于重新编码的音轨">
+          <Field
+            label={tr("响度", "Loudness")}
+            hint={tr("两遍测量，只作用于重新编码的音轨", "Two-pass measurement; only affects re-encoded tracks")}
+          >
             <Segmented<"off" | "on">
               className="w-full"
               value={plan.loudnorm ? "on" : "off"}
               options={[
-                { value: "off", label: "不调整" },
+                { value: "off", label: tr("不调整", "Off") },
                 {
                   value: "on",
-                  label: "标准化 -16 LUFS",
+                  label: tr("标准化 -16 LUFS", "Normalize -16 LUFS"),
                   disabled: !encodedAudio && !plan.loudnorm,
-                  title: encodedAudio ? "先测量整段响度再线性调整，适合音量忽大忽小的素材" : "音轨都是原样复制，无法调整响度",
+                  title: encodedAudio
+                    ? tr(
+                        "先测量整段响度再线性调整，适合音量忽大忽小的素材",
+                        "Measures the whole program, then adjusts linearly; good for footage with uneven volume",
+                      )
+                    : tr("音轨都是原样复制，无法调整响度", "All audio tracks are copied, so loudness cannot change"),
                 },
               ]}
               onChange={(v) =>
@@ -188,7 +223,11 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
             />
           </Field>
 
-          <Field label="编码速度" hint="越慢画质越好" className={cn(copy && "pointer-events-none opacity-40")}>
+          <Field
+            label={tr("编码速度", "Speed preset")}
+            hint={tr("越慢画质越好", "Slower gives better quality")}
+            className={cn(copy && "pointer-events-none opacity-40")}
+          >
             <Select
               mono
               value={vp.preset}
@@ -203,7 +242,13 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
 
           <Field
             label={meta.param}
-            hint={byBitrate ? "按码率编码时不使用" : meta.lowerIsBetter ? "越小画质越好" : "越大画质越好"}
+            hint={
+              byBitrate
+                ? tr("按码率编码时不使用", "Unused when encoding by bitrate")
+                : meta.lowerIsBetter
+                  ? tr("越小画质越好", "Lower is better")
+                  : tr("越大画质越好", "Higher is better")
+            }
             className={cn((copy || byBitrate) && "pointer-events-none opacity-40")}
           >
             <div className="flex h-8 items-center gap-2">
@@ -224,21 +269,25 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
             </div>
           </Field>
 
-          <Field label="码率控制" hint={RC_HINT[rc.kind]} className={cn("md:col-span-2", copy && "pointer-events-none opacity-40")}>
+          <Field
+            label={tr("码率控制", "Rate control")}
+            hint={rcHint(rc.kind)}
+            className={cn("md:col-span-2", copy && "pointer-events-none opacity-40")}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <Segmented<RateControlKind>
                 className="shrink-0"
                 value={rc.kind}
                 options={(["quality", "bitrate", "capped", "two_pass"] as const).map((k) => {
                   const why = rcUnavailable(k, plan, caps);
-                  return { value: k, label: RC_LABEL[k], disabled: !!why, title: why ?? RC_HINT[k] };
+                  return { value: k, label: rcLabel(k), disabled: !!why, title: why ?? rcHint(k) };
                 })}
                 onChange={setKind}
               />
               {rc.kind !== "quality" && (
                 <MbpsInput
                   kbps={rc.kbps}
-                  label={rc.kind === "capped" ? "峰值码率" : "目标码率"}
+                  label={rc.kind === "capped" ? tr("峰值码率", "Peak bitrate") : tr("目标码率", "Target bitrate")}
                   onCommit={(kbps) =>
                     patch((d) => {
                       if (d.video.rateControl.kind !== "quality") d.video.rateControl = { ...d.video.rateControl, kbps };
@@ -249,11 +298,15 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
             </div>
           </Field>
 
-          <Field label="关键帧间隔" hint="留空为默认" className={cn(copy && "pointer-events-none opacity-40")}>
+          <Field
+            label={tr("关键帧间隔", "Keyframe interval")}
+            hint={tr("留空为默认", "Empty means default")}
+            className={cn(copy && "pointer-events-none opacity-40")}
+          >
             <input
               className={inputCls}
               inputMode="numeric"
-              placeholder="默认"
+              placeholder={tr("默认", "Default")}
               value={vp.gop ?? ""}
               onChange={(e) =>
                 patch((d) => {
@@ -265,12 +318,12 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
           </Field>
 
           {vp.hdrAction === "tonemap" && (
-            <Field label="色调映射管线">
+            <Field label={tr("色调映射管线", "Tone mapping pipeline")}>
               <Select
                 value={vp.tonemap ?? "libplacebo"}
                 options={caps.tonemap.map((t) => ({
                   value: t.id,
-                  label: `${t.id}${t.available ? "" : "（不可用）"}`,
+                  label: `${t.id}${t.available ? "" : tr("（不可用）", " (unavailable)")}`,
                   disabled: !t.available,
                 }))}
                 onChange={(t) =>
@@ -283,10 +336,10 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
           )}
 
           {vp.encoder === "libx265" && (
-            <Field label="附加 x265-params" hint="冒号分隔" className="md:col-span-3">
+            <Field label={tr("附加 x265-params", "Extra x265-params")} hint={tr("冒号分隔", "Colon separated")} className="md:col-span-3">
               <input
                 className={inputCls}
-                placeholder="例如 aq-mode=3:psy-rd=2"
+                placeholder={tr("例如 aq-mode=3:psy-rd=2", "e.g. aq-mode=3:psy-rd=2")}
                 value={vp.extraParams ?? ""}
                 onChange={(e) =>
                   patch((d) => {
@@ -297,10 +350,14 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
             </Field>
           )}
 
-          <Field label="附加 ffmpeg 参数" hint="插在视频编码参数之后" className="md:col-span-3">
+          <Field
+            label={tr("附加 ffmpeg 参数", "Extra ffmpeg arguments")}
+            hint={tr("插在视频编码参数之后", "Inserted after the video encoder options")}
+            className="md:col-span-3"
+          >
             <input
               className={inputCls}
-              placeholder="例如 -tune grain"
+              placeholder={tr("例如 -tune grain", "e.g. -tune grain")}
               value={vp.extraArgs ?? ""}
               onChange={(e) =>
                 patch((d) => {
@@ -311,7 +368,10 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
           </Field>
 
           <p className="text-[11px] text-subtle md:col-span-3">
-            质量数值在不同编码器间不等价：x265 CRF 20、NVENC CQ 23、QSV 21 大致都是"高"档。
+            {tr(
+              '质量数值在不同编码器间不等价：x265 CRF 20、NVENC CQ 23、QSV 21 大致都是"高"档。',
+              'Quality values are not comparable across encoders: x265 CRF 20, NVENC CQ 23 and QSV 21 are all roughly "High".',
+            )}
           </p>
         </div>
       )}

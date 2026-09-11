@@ -60,6 +60,10 @@ pub struct DoviInfo {
     pub has_enhancement_layer: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub el_type: Option<ElType>,
+    /// 首帧带逐帧 RPU（`Dolby Vision RPU Data` 或解析后的 `Dolby Vision Metadata`）。
+    /// 只有配置记录、没有 RPU 的流在播放器上不会按杜比视界播放
+    #[serde(default)]
+    pub rpu: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -201,11 +205,14 @@ pub struct MediaInfo {
 /// 导入失败的文件
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct ImportFailure {
     pub path: String,
-    /// 中文原因
+    /// 给用户看的原因（按界面语言）
     pub reason: String,
+    /// ffprobe 原文，界面上可展开查看
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]

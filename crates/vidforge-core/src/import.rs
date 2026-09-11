@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ffmpeg::exec::Runner;
 use crate::ffmpeg::probe::probe_file;
+use crate::i18n::{Lang, pick};
 use crate::model::{ImportFailure, ImportProgress, ImportResult, MediaInfo};
 use crate::util::par_map;
 
@@ -66,13 +67,16 @@ pub struct Expanded {
 }
 
 /// 展开输入路径：文件原样保留，文件夹递归收集视频文件。不跟随目录符号链接，避免循环
-pub fn expand_paths(inputs: &[PathBuf]) -> Expanded {
+pub fn expand_paths(inputs: &[PathBuf], lang: Lang) -> Expanded {
     let mut out = Expanded::default();
     let mut seen = HashSet::new();
     for input in inputs {
         match fs::metadata(input) {
-            Err(_) => out.errors.push(failure(input, "路径不存在或无法访问".to_string())),
-            Ok(meta) if meta.is_dir() => walk(input, input, &mut out, &mut seen),
+            Err(_) => {
+                let reason = pick(lang, "路径不存在或无法访问", "The path does not exist or cannot be accessed");
+                out.errors.push(failure(input, reason.into(), None));
+            }
+            Ok(meta) if meta.is_dir() => walk(input, input, &mut out, &mut seen, lang),
             Ok(_) => {
                 if seen.insert(input.clone()) {
                     out.entries.push(Entry { path: input.clone(), root: None });
@@ -83,16 +87,17 @@ pub fn expand_paths(inputs: &[PathBuf]) -> Expanded {
     out
 }
 
-fn failure(path: &Path, reason: String) -> ImportFailure {
-    ImportFailure { path: path.display().to_string(), reason }
+fn failure(path: &Path, reason: String, detail: Option<String>) -> ImportFailure {
+    ImportFailure { path: path.display().to_string(), reason, detail }
 }
 
-fn walk(dir: &Path, root: &Path, out: &mut Expanded, seen: &mut HashSet<PathBuf>) {
+fn walk(dir: &Path, root: &Path, out: &mut Expanded, seen: &mut HashSet<PathBuf>, lang: Lang) {
     // 读不了的文件夹（权限、断开的网络盘）要告诉用户，不能表现成"里面什么都没有"
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
-            out.errors.push(failure(dir, format!("无法读取文件夹：{e}")));
+            let reason = pick(lang, "无法读取文件夹", "Could not read the folder");
+            out.errors.push(failure(dir, reason.into(), Some(e.to_string())));
             return;
         }
     };
@@ -105,7 +110,7 @@ fn walk(dir: &Path, root: &Path, out: &mut Expanded, seen: &mut HashSet<PathBuf>
         }
         let path = e.path();
         if ft.is_dir() {
-            walk(&path, root, out, seen);
+            walk(&path, root, out, seen, lang);
         } else if ft.is_file() {
             if !is_video_file(&path) {
                 out.skipped += 1;
@@ -116,15 +121,16 @@ fn walk(dir: &Path, root: &Path, out: &mut Expanded, seen: &mut HashSet<PathBuf>
     }
 }
 
-/// 导入：展开路径后用 `workers` 路并发分析，每完成一个文件回调一次进度
+/// 导入：展开路径后用 `workers` 路并发分析，每完成一个文件回调一次进度。失败原因按 `lang` 生成
 pub fn import_paths(
     inputs: &[PathBuf],
     ffprobe: &Path,
     runner: &dyn Runner,
     workers: usize,
+    lang: Lang,
     progress: &(dyn Fn(ImportProgress) + Sync),
 ) -> ImportResult {
-    let expanded = expand_paths(inputs);
+    let expanded = expand_paths(inputs, lang);
     let total = expanded.entries.len() as u32;
     let done = AtomicU32::new(0);
     let results: Vec<Result<MediaInfo, ImportFailure>> = par_map(
@@ -136,7 +142,10 @@ pub fn import_paths(
                     m.import_root = entry.root.as_ref().map(|r| r.display().to_string());
                     m
                 })
-                .map_err(|reason| failure(&entry.path, reason));
+                .map_err(|e| {
+                    let (reason, detail) = e.describe(lang);
+                    failure(&entry.path, reason, detail)
+                });
             let n = done.fetch_add(1, Ordering::SeqCst) + 1;
             let current = entry.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             progress(ImportProgress { done: n, total, current });
@@ -181,7 +190,7 @@ mod tests {
         touch(&d.join("sub").join("deep").join("c.mov"));
         touch(&d.join(".hidden").join("d.mp4"));
         touch(&d.join("thumb.jpg"));
-        let e = expand_paths(&[d.to_path_buf()]);
+        let e = expand_paths(&[d.to_path_buf()], Lang::ZhCn);
         assert_eq!(names(&e), ["a.MP4", "b.mkv", "c.mov"]);
         assert!(e.entries.iter().all(|x| x.root.as_deref() == Some(d)));
         assert_eq!(e.skipped, 2, "notes.txt 与 thumb.jpg 被跳过");
@@ -194,7 +203,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(&dir.path().join("IMG_0001.MOV"));
         touch(&dir.path().join("._IMG_0001.MOV"));
-        assert_eq!(names(&expand_paths(&[dir.path().to_path_buf()])), ["IMG_0001.MOV"]);
+        assert_eq!(names(&expand_paths(&[dir.path().to_path_buf()], Lang::ZhCn)), ["IMG_0001.MOV"]);
     }
 
     #[cfg(windows)]
@@ -209,7 +218,7 @@ mod tests {
         let status =
             std::process::Command::new("attrib").arg("+h").arg(&hidden).creation_flags(0x0800_0000).status().unwrap();
         assert!(status.success());
-        assert_eq!(names(&expand_paths(&[dir.path().to_path_buf()])), ["ok.mp4"]);
+        assert_eq!(names(&expand_paths(&[dir.path().to_path_buf()], Lang::ZhCn)), ["ok.mp4"]);
     }
 
     #[test]
@@ -217,10 +226,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let odd = dir.path().join("recording.dat");
         touch(&odd);
-        let e = expand_paths(&[odd.clone(), odd.clone(), dir.path().join("nope.mp4")]);
+        let e = expand_paths(&[odd.clone(), odd.clone(), dir.path().join("nope.mp4")], Lang::ZhCn);
         assert_eq!(e.entries, vec![Entry { path: odd, root: None }]);
         assert_eq!(e.errors.len(), 1);
         assert!(e.errors[0].reason.contains("不存在"));
+        let en = expand_paths(&[dir.path().join("nope.mp4")], Lang::En);
+        assert_eq!(en.errors[0].reason, "The path does not exist or cannot be accessed");
     }
 
     #[cfg(unix)]
@@ -231,7 +242,7 @@ mod tests {
         let locked = dir.path().join("locked");
         touch(&locked.join("a.mp4"));
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let e = expand_paths(&[dir.path().to_path_buf()]);
+        let e = expand_paths(&[dir.path().to_path_buf()], Lang::ZhCn);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         // root 用户不受权限限制，此时读得到，跳过断言
         if e.entries.is_empty() {
@@ -247,9 +258,10 @@ mod tests {
         let file = dir.path().join("x.mp4");
         touch(&file);
         let mut out = Expanded::default();
-        walk(&file, dir.path(), &mut out, &mut HashSet::new());
+        walk(&file, dir.path(), &mut out, &mut HashSet::new(), Lang::ZhCn);
         assert_eq!(out.errors.len(), 1);
         assert!(out.errors[0].reason.contains("无法读取文件夹"));
+        assert!(out.errors[0].detail.is_some(), "系统原因放进可展开的原文");
     }
 
     /// 文件名含 bad 的视为损坏，其余返回一段最小的有效 JSON
@@ -278,12 +290,14 @@ mod tests {
             Path::new("ffprobe"),
             &Fake,
             2,
+            Lang::ZhCn,
             &|p| seen.lock().unwrap().push((p.done, p.total)),
         );
         assert_eq!(r.media.len(), 2);
         assert!(r.media.iter().all(|m| m.import_root.is_some()));
         assert_eq!(r.failures.len(), 2, "损坏文件与不存在的路径：{:?}", r.failures);
-        assert!(r.failures.iter().any(|f| f.reason.contains("文件不完整")));
+        let broken = r.failures.iter().find(|f| f.reason.contains("文件不完整")).expect("损坏文件有说明");
+        assert_eq!(broken.detail.as_deref(), Some("moov atom not found"), "原文可展开");
         let mut seen = seen.into_inner().unwrap();
         seen.sort();
         assert_eq!(seen, [(1, 3), (2, 3), (3, 3)]);

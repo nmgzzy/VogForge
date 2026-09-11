@@ -16,11 +16,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{bundled_ffmpeg_dir, write_json_atomic};
 use crate::external::probe_external;
+use crate::i18n::{Lang, pick};
 use crate::model::{
     BuildFlag, Capabilities, DeviceProbe, EncoderId, EncoderProbe, EnvStatus, FailureKind, Platform, ProbeProgress,
-    ToneMapPipeline, TonemapProbe, Vendor,
+    ToneMapPipeline, TonemapBlock, TonemapProbe, Vendor,
 };
 use crate::sysinfo;
+use crate::tr;
 use crate::util::{now_iso, par_map};
 
 use super::classify::{classify, key_line};
@@ -30,8 +32,8 @@ use super::parse::{
     MIN_VERSION, detect_build_source, help_has_option, parse_codec_list, parse_filters, parse_name_list, parse_pix_fmts,
 };
 
-/// 缓存格式版本。探测逻辑变化时加一，旧缓存自动作废
-const CACHE_SCHEMA: u32 = 1;
+/// 缓存格式版本。探测逻辑变化时加一，旧缓存自动作废（2：色调映射不可用原因改为结构化）
+const CACHE_SCHEMA: u32 = 2;
 const CACHE_FILE: &str = "capabilities.json";
 const WORKERS: usize = 4;
 const LIST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -44,6 +46,8 @@ pub struct ProbeContext<'a> {
     pub app_dir: PathBuf,
     /// 设置里指定的 ffmpeg 路径
     pub user_path: Option<PathBuf>,
+    /// 说明文字的语言
+    pub lang: Lang,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,32 +56,56 @@ struct CacheFile {
     caps: Capabilities,
 }
 
+/// 探测各阶段的名字（中文, 英文）
+type Stage = (&'static str, &'static str);
+const STAGE_LOCATE: Stage = ("查找 ffmpeg", "Locating ffmpeg");
+const STAGE_CACHE: Stage = ("读取缓存", "Reading cache");
+const STAGE_BUILD: Stage = ("检测编译能力", "Checking build features");
+const STAGE_HELP: Stage = ("读取编码器参数", "Reading encoder options");
+const STAGE_DEVICES: Stage = ("初始化硬件设备", "Initializing hardware devices");
+const STAGE_TEST: Stage = ("试编码", "Test encoding");
+const STAGE_TONEMAP: Stage = ("检测色调映射", "Checking tone mapping");
+
 /// 探测入口。`force` 为 false 时，指纹未变就直接返回缓存（外部工具仍会重新查找，开销很小）。
+///
+/// 缓存里存的是中文原文；返回前按 `ctx.lang` 用 [`localize`] 从结构化字段重新生成说明，切换语言不需要重新探测。
 pub fn probe(ctx: &ProbeContext, force: bool, progress: &(dyn Fn(ProbeProgress) + Sync)) -> Capabilities {
-    let report = |stage: &str, done: usize, total: usize| {
-        progress(ProbeProgress { stage: stage.to_string(), done: done as u32, total: total as u32 });
+    let lang = ctx.lang;
+    let report = |stage: Stage, done: usize, total: usize| {
+        let stage = pick(lang, stage.0, stage.1).to_string();
+        progress(ProbeProgress { stage, done: done as u32, total: total as u32 });
     };
-    report("查找 ffmpeg", 0, 1);
+    report(STAGE_LOCATE, 0, 1);
 
     let opts = LocateOptions {
         user_path: ctx.user_path.clone(),
         bundled_dir: Some(bundled_ffmpeg_dir(&ctx.app_dir)),
         platform: ctx.platform,
+        lang,
     };
     let located = locate(&opts, ctx.env, ctx.runner);
     let gpus = sysinfo::gpus(ctx.runner);
-    let external = probe_external(ctx.platform, ctx.env, ctx.runner);
+    let external = probe_external(ctx.platform, ctx.env, ctx.runner, lang);
 
     let Some(found) = located.found else {
         // 有 ffmpeg 可执行文件却用不了，与根本没装是两种问题，给用户的建议也不同
         let mut caps = match located.broken.first() {
             Some(reason) => Capabilities::placeholder(
                 EnvStatus::Broken,
-                format!("找到了 ffmpeg，但无法使用：{reason}。请换一套完整的构建，或在设置里指定其他目录。"),
+                tr!(
+                    lang,
+                    "找到了 ffmpeg，但无法使用：{}。请换一套完整的构建，或在设置里指定其他目录。",
+                    "Found ffmpeg, but it cannot be used: {}. Install a complete build, or choose another folder in Settings.",
+                    reason
+                ),
             ),
             None => Capabilities::placeholder(
                 EnvStatus::Missing,
-                "没有找到 ffmpeg 与 ffprobe。请安装 ffmpeg 7.1 或更高版本，或在设置里指定它所在的目录。",
+                pick(
+                    lang,
+                    "没有找到 ffmpeg 与 ffprobe。请安装 ffmpeg 7.1 或更高版本，或在设置里指定它所在的目录。",
+                    "ffmpeg and ffprobe were not found. Install ffmpeg 7.1 or newer, or choose its folder in Settings.",
+                ),
             ),
         };
         caps.searched = located.searched;
@@ -86,12 +114,12 @@ pub fn probe(ctx: &ProbeContext, force: bool, progress: &(dyn Fn(ProbeProgress) 
         caps.external = external;
         caps.platform = ctx.platform;
         caps.probed_at = now_iso();
-        report("查找 ffmpeg", 1, 1);
+        report(STAGE_LOCATE, 1, 1);
         return caps;
     };
 
     // 与"这次怎么找到的"相关的字段每次都重新填，缓存只负责省掉三层探测
-    let notes = locate_notes(&found, located.problems);
+    let notes = locate_notes(&found, located.problems, lang);
     let fingerprint = fingerprint(&found, &gpus);
     if !force {
         if let Some(mut cached) = load_cache(&ctx.app_dir).filter(|c| c.fingerprint == fingerprint) {
@@ -99,7 +127,8 @@ pub fn probe(ctx: &ProbeContext, force: bool, progress: &(dyn Fn(ProbeProgress) 
             cached.searched = located.searched;
             cached.notes = notes;
             cached.external = external;
-            report("读取缓存", 1, 1);
+            report(STAGE_CACHE, 1, 1);
+            localize(&mut cached, lang);
             return cached;
         }
     }
@@ -112,21 +141,113 @@ pub fn probe(ctx: &ProbeContext, force: bool, progress: &(dyn Fn(ProbeProgress) 
     caps.fingerprint = fingerprint;
     caps.probed_at = now_iso();
     let _ = save_cache(&ctx.app_dir, &caps);
+    localize(&mut caps, lang);
     caps
 }
 
-/// 找到了 ffmpeg 时仍值得告诉用户的事：设置里指定的路径无效、ffprobe 与 ffmpeg 版本不一致
-fn locate_notes(found: &Located, problems: Vec<String>) -> Vec<String> {
-    let mut notes: Vec<String> = problems.into_iter().filter(|p| !p.contains("只有 ffmpeg")).collect();
+/// 找到了 ffmpeg 时仍值得告诉用户的事：设置里指定的路径无效、ffprobe 与 ffmpeg 版本不一致。
+/// "只有 ffmpeg 没有 ffprobe"已经从其他目录找到了完整的一套，不再提
+fn locate_notes(found: &Located, problems: Vec<String>, lang: Lang) -> Vec<String> {
+    let lonely = [" 里只有 ffmpeg，没有 ffprobe", " has ffmpeg but no ffprobe"];
+    let mut notes: Vec<String> = problems.into_iter().filter(|p| !lonely.iter().any(|l| p.contains(l))).collect();
     if let Some(pv) = &found.ffprobe_version {
         if pv.raw != found.version.raw {
-            notes.push(format!(
+            notes.push(tr!(
+                lang,
                 "ffprobe 版本（{}）与 ffmpeg（{}）不一致，建议使用同一套构建",
-                pv.raw, found.version.raw
+                "The ffprobe version ({}) differs from ffmpeg ({}); use both from the same build",
+                pv.raw,
+                found.version.raw
             ));
         }
     }
     notes
+}
+
+/// 把缓存里的中文说明换成 `lang` 的版本。只改由结构化字段决定的文字；ffmpeg 原文（设备与编码器报错）保持原样
+pub fn localize(caps: &mut Capabilities, lang: Lang) {
+    if lang == Lang::ZhCn {
+        return;
+    }
+    caps.version_number = caps.version_number.replace("（开发版）", " (dev build)").replace("未知", "unknown");
+    caps.build_source = match caps.build_source.as_str() {
+        "Linux 发行版" => "Linux distribution".into(),
+        "未知来源" => "unknown".into(),
+        other => other.into(),
+    };
+    if caps.status == EnvStatus::TooOld {
+        caps.status_detail = too_old_detail(&caps.version_number, lang);
+    }
+    for f in &mut caps.build_flags {
+        if let Some(affects) = flag_affects(&f.name, lang) {
+            f.affects = affects.into();
+        }
+    }
+    for e in &mut caps.encoders {
+        e.error = e.error.take().map(|err| match err.as_str() {
+            NOT_BUILT_ZH => pick(lang, NOT_BUILT_ZH, "This ffmpeg was built without this encoder").into(),
+            TIMEOUT_ZH => pick(lang, TIMEOUT_ZH, "The test encode timed out").into(),
+            _ => err,
+        });
+    }
+    for t in &mut caps.tonemap {
+        t.note = tonemap_note(t.id, t.block.as_ref(), lang);
+    }
+    // 外部工具每次探测都按语言重新生成；这里照顾浏览器预览里固定的示例能力
+    for x in &mut caps.external {
+        if let Some(p) = crate::external::purpose(&x.name, lang) {
+            x.purpose = p.into();
+        }
+    }
+}
+
+const NOT_BUILT_ZH: &str = "当前 ffmpeg 没有编译这个编码器";
+const TIMEOUT_ZH: &str = "试编码超时";
+
+fn too_old_detail(version: &str, lang: Lang) -> String {
+    tr!(
+        lang,
+        "ffmpeg {} 低于最低要求 {}。杜比视界保留需要 7.1 起的 libx265 -dolbyvision，旧版本还可能丢失 HDR10 元数据。请升级后再转码。",
+        "ffmpeg {} is older than the required {}. Keeping Dolby Vision needs libx265 -dolbyvision from 7.1, and older versions may also drop HDR10 metadata. Upgrade before transcoding.",
+        version,
+        MIN_VERSION
+    )
+}
+
+/// 色调映射管线的说明：可用时是特点，不可用时是原因
+fn tonemap_note(p: ToneMapPipeline, block: Option<&TonemapBlock>, lang: Lang) -> String {
+    match block {
+        Some(TonemapBlock::NotBuilt { what }) if what == "scale_vt" => {
+            pick(lang, "当前 ffmpeg 没有 scale_vt 滤镜", "This ffmpeg has no scale_vt filter").into()
+        }
+        Some(TonemapBlock::NotBuilt { what }) => {
+            tr!(lang, "当前 ffmpeg 未编译 {}", "This ffmpeg was built without {}", what)
+        }
+        Some(TonemapBlock::Device { device, error }) => {
+            tr!(lang, "{} 设备初始化失败：{}", "The {} device failed to initialize: {}", device, error)
+        }
+        Some(TonemapBlock::MacOnly) => pick(lang, "仅 macOS 可用", "Only available on macOS").into(),
+        Some(TonemapBlock::TrialFailed { error }) => tr!(lang, "试运行失败：{}", "The trial run failed: {}", error),
+        None => match p {
+            ToneMapPipeline::Libplacebo => pick(
+                lang,
+                "质量最好，唯一能正确处理杜比视界 Profile 5",
+                "Best quality, and the only one that handles Dolby Vision Profile 5 correctly",
+            ),
+            ToneMapPipeline::TonemapOpencl => pick(
+                lang,
+                "GPU 加速，带场景自适应峰值检测，输出限 8bit",
+                "GPU accelerated with scene-adaptive peak detection; 8-bit output only",
+            ),
+            ToneMapPipeline::Zscale => pick(lang, "纯 CPU 兜底，速度较慢", "CPU fallback; slower"),
+            ToneMapPipeline::ScaleVt => pick(
+                lang,
+                "只做色彩空间转换，不做感知色调映射，高光可能过曝",
+                "Only converts the color space without perceptual tone mapping; highlights may clip",
+            ),
+        }
+        .into(),
+    }
 }
 
 fn fingerprint(found: &Located, gpus: &[crate::model::GpuInfo]) -> String {
@@ -268,18 +389,17 @@ struct Lists {
     protocols: HashSet<String>,
 }
 
-fn full_probe(ctx: &ProbeContext, found: &Located, report: &(dyn Fn(&str, usize, usize) + Sync)) -> Capabilities {
+fn full_probe(ctx: &ProbeContext, found: &Located, report: &(dyn Fn(Stage, usize, usize) + Sync)) -> Capabilities {
     let ffmpeg = found.ffmpeg.as_path();
 
     // ── 第 1 层：编译能力 ──
-    const STAGE1: &str = "检测编译能力";
     let list_cmds = ["-encoders", "-filters", "-bsfs", "-hwaccels", "-protocols"];
-    report(STAGE1, 0, list_cmds.len());
+    report(STAGE_BUILD, 0, list_cmds.len());
     let outs = par_map(
         &list_cmds,
         WORKERS,
         |flag| ffmpeg_run(ctx, ffmpeg, &args(["-hide_banner", flag]), LIST_TIMEOUT).combined(),
-        |n| report(STAGE1, n, list_cmds.len()),
+        |n| report(STAGE_BUILD, n, list_cmds.len()),
     );
     let codec_list = parse_codec_list(&outs[0]);
     let lists = Lists {
@@ -293,7 +413,6 @@ fn full_probe(ctx: &ProbeContext, found: &Located, report: &(dyn Fn(&str, usize,
 
     let candidates: Vec<EncoderId> =
         platform_encoders(ctx.platform).into_iter().filter(|e| lists.encoders.contains(e.name())).collect();
-    const STAGE_HELP: &str = "读取编码器参数";
     report(STAGE_HELP, 0, candidates.len());
     let helps = par_map(
         &candidates,
@@ -306,10 +425,9 @@ fn full_probe(ctx: &ProbeContext, found: &Located, report: &(dyn Fn(&str, usize,
     );
 
     // ── 第 2 层：设备初始化 ──
-    const STAGE2: &str = "初始化硬件设备";
     let device_kinds: Vec<&str> =
         platform_devices(ctx.platform).iter().copied().filter(|d| lists.hwaccels.iter().any(|h| h == d)).collect();
-    report(STAGE2, 0, device_kinds.len());
+    report(STAGE_DEVICES, 0, device_kinds.len());
     let devices: Vec<DeviceProbe> = par_map(
         &device_kinds,
         WORKERS,
@@ -321,19 +439,18 @@ fn full_probe(ctx: &ProbeContext, found: &Located, report: &(dyn Fn(&str, usize,
                 error: (!out.success()).then(|| key_line(&out.stderr)),
             }
         },
-        |n| report(STAGE2, n, device_kinds.len()),
+        |n| report(STAGE_DEVICES, n, device_kinds.len()),
     );
 
     // ── 第 3 层：真实试编码 ──
-    const STAGE3: &str = "试编码";
-    report(STAGE3, 0, candidates.len());
+    report(STAGE_TEST, 0, candidates.len());
     let jobs: Vec<(EncoderId, Vec<String>)> =
         candidates.iter().copied().zip(helps.iter().map(|h| parse_pix_fmts(h))).collect();
     let probed: Vec<EncoderProbe> = par_map(
         &jobs,
         WORKERS,
         |(enc, pix_fmts)| probe_encoder(ctx, ffmpeg, *enc, pix_fmts),
-        |n| report(STAGE3, n, candidates.len()),
+        |n| report(STAGE_TEST, n, candidates.len()),
     );
     let encoders: Vec<EncoderProbe> = platform_encoders(ctx.platform)
         .into_iter()
@@ -344,37 +461,31 @@ fn full_probe(ctx: &ProbeContext, found: &Located, report: &(dyn Fn(&str, usize,
                 codec: id.codec(),
                 usable: false,
                 ten_bit: false,
-                error: Some("当前 ffmpeg 没有编译这个编码器".to_string()),
+                error: Some(NOT_BUILT_ZH.to_string()),
                 failure: Some(FailureKind::NotBuilt),
             })
         })
         .collect();
 
     // ── 色调映射管线 ──
-    const STAGE4: &str = "检测色调映射";
     let pipelines = ToneMapPipeline::ORDER;
-    report(STAGE4, 0, pipelines.len());
+    report(STAGE_TONEMAP, 0, pipelines.len());
     let tonemap = par_map(
         &pipelines,
         WORKERS,
         |p| probe_tonemap(ctx, ffmpeg, *p, &lists, &devices),
-        |n| report(STAGE4, n, pipelines.len()),
+        |n| report(STAGE_TONEMAP, n, pipelines.len()),
     );
 
     let x265_help = candidates.iter().position(|e| *e == EncoderId::Libx265).map(|i| helps[i].as_str()).unwrap_or("");
     let version_ok = found.version.meets_minimum();
     let x265_usable = encoders.iter().any(|e| e.id == EncoderId::Libx265 && e.usable);
 
+    // 缓存里的说明一律用中文，返回前再按语言换（localize）
     let (status, status_detail) = if version_ok {
         (EnvStatus::Ready, String::new())
     } else {
-        (
-            EnvStatus::TooOld,
-            format!(
-                "ffmpeg {} 低于最低要求 {MIN_VERSION}。杜比视界保留需要 7.1 起的 libx265 -dolbyvision，旧版本还可能丢失 HDR10 元数据。请升级后再转码。",
-                found.version.display_number()
-            ),
-        )
+        (EnvStatus::TooOld, too_old_detail(&found.version.display_number(), Lang::ZhCn))
     };
 
     Capabilities {
@@ -416,7 +527,7 @@ fn probe_encoder(ctx: &ProbeContext, ffmpeg: &Path, enc: EncoderId, pix_fmts: &[
     };
     let Some(out8) = run(false) else { return base };
     if !out8.success() {
-        let text = if out8.timed_out { "试编码超时".to_string() } else { out8.stderr.clone() };
+        let text = if out8.timed_out { TIMEOUT_ZH.to_string() } else { out8.stderr.clone() };
         return EncoderProbe { error: Some(key_line(&text)), failure: Some(classify(&text)), ..base };
     }
     // 10bit：像素格式必须在编码器自报的列表里；列表为空（极旧版本不输出）时仍然尝试
@@ -433,34 +544,57 @@ fn probe_tonemap(
     lists: &Lists,
     devices: &[DeviceProbe],
 ) -> TonemapProbe {
-    let device_error = |id: &str| devices.iter().find(|d| d.id == id && !d.available).and_then(|d| d.error.clone());
-    let unavailable = |note: String| TonemapProbe { id: p, available: false, note };
+    let device = |id: &str, label: &str| {
+        devices
+            .iter()
+            .find(|d| d.id == id && !d.available)
+            .map(|d| TonemapBlock::Device { device: label.into(), error: d.error.clone().unwrap_or_default() })
+    };
+    let not_built = |what: &str| Some(TonemapBlock::NotBuilt { what: what.into() });
     let has = |f: &str| lists.filters.contains(f);
 
     let precheck = match p {
-        ToneMapPipeline::Libplacebo if !has("libplacebo") => Some("当前 ffmpeg 未编译 libplacebo".to_string()),
-        ToneMapPipeline::Libplacebo => device_error("vulkan").map(|e| format!("Vulkan 设备初始化失败：{e}")),
-        ToneMapPipeline::TonemapOpencl if !has("tonemap_opencl") => Some("当前 ffmpeg 未编译 OpenCL".to_string()),
-        ToneMapPipeline::TonemapOpencl => device_error("opencl").map(|e| format!("OpenCL 设备初始化失败：{e}")),
-        ToneMapPipeline::Zscale if !(has("zscale") && has("tonemap")) => Some("当前 ffmpeg 未编译 libzimg".to_string()),
-        ToneMapPipeline::ScaleVt if ctx.platform != Platform::Macos => Some("仅 macOS 可用".to_string()),
-        ToneMapPipeline::ScaleVt if !has("scale_vt") => Some("当前 ffmpeg 没有 scale_vt 滤镜".to_string()),
+        ToneMapPipeline::Libplacebo if !has("libplacebo") => not_built("libplacebo"),
+        ToneMapPipeline::Libplacebo => device("vulkan", "Vulkan"),
+        ToneMapPipeline::TonemapOpencl if !has("tonemap_opencl") => not_built("OpenCL"),
+        ToneMapPipeline::TonemapOpencl => device("opencl", "OpenCL"),
+        ToneMapPipeline::Zscale if !(has("zscale") && has("tonemap")) => not_built("libzimg"),
+        ToneMapPipeline::ScaleVt if ctx.platform != Platform::Macos => Some(TonemapBlock::MacOnly),
+        ToneMapPipeline::ScaleVt if !has("scale_vt") => not_built("scale_vt"),
         _ => None,
     };
-    if let Some(note) = precheck {
-        return unavailable(note);
-    }
-    let out = ffmpeg_run(ctx, ffmpeg, &tonemap_test_args(p), TEST_TIMEOUT);
-    if !out.success() {
-        return unavailable(format!("试运行失败：{}", key_line(&out.stderr)));
-    }
-    let note = match p {
-        ToneMapPipeline::Libplacebo => "质量最好，唯一能正确处理杜比视界 Profile 5",
-        ToneMapPipeline::TonemapOpencl => "GPU 加速，带场景自适应峰值检测，输出限 8bit",
-        ToneMapPipeline::Zscale => "纯 CPU 兜底，速度较慢",
-        ToneMapPipeline::ScaleVt => "只做色彩空间转换，不做感知色调映射，高光可能过曝",
-    };
-    TonemapProbe { id: p, available: true, note: note.to_string() }
+    let block = precheck.or_else(|| {
+        let out = ffmpeg_run(ctx, ffmpeg, &tonemap_test_args(p), TEST_TIMEOUT);
+        (!out.success()).then(|| TonemapBlock::TrialFailed { error: key_line(&out.stderr) })
+    });
+    TonemapProbe { id: p, available: block.is_none(), note: tonemap_note(p, block.as_ref(), Lang::ZhCn), block }
+}
+
+/// 构建开关缺失时影响的功能（中文, 英文）
+const FLAG_AFFECTS: &[(&str, &str, &str)] = &[
+    ("libx265", "HEVC 软编、杜比视界保留", "HEVC software encoding, Dolby Vision"),
+    ("libx264", "H.264 软编", "H.264 software encoding"),
+    ("libsvtav1", "AV1 软编（含 HDR10）", "AV1 software encoding (with HDR10)"),
+    ("libplacebo", "最佳色调映射、杜比视界 P5 映射", "Best tone mapping, Dolby Vision P5 mapping"),
+    ("vulkan", "libplacebo 运行依赖", "Required by libplacebo"),
+    ("opencl", "GPU 色调映射", "GPU tone mapping"),
+    ("libzimg", "CPU 色调映射兜底", "CPU tone mapping fallback"),
+    ("libvmaf", "画质评分（v2）", "Quality scoring (v2)"),
+    ("libbluray", "蓝光原盘读取（v2）", "Blu-ray disc reading (v2)"),
+    ("libopus", "Opus 音频编码", "Opus audio encoding"),
+    (
+        "libfdk_aac",
+        "高质量 AAC / HE-AAC（官方构建均不含，已用原生 aac 替代）",
+        "High-quality AAC / HE-AAC (absent from official builds; the native aac encoder is used instead)",
+    ),
+    ("libvpl", "Intel QSV 硬件编码", "Intel QSV hardware encoding"),
+    ("nvenc", "NVIDIA 硬件编码", "NVIDIA hardware encoding"),
+    ("amf", "AMD 硬件编码", "AMD hardware encoding"),
+    ("videotoolbox", "Apple 硬件编码", "Apple hardware encoding"),
+];
+
+fn flag_affects(name: &str, lang: Lang) -> Option<&'static str> {
+    FLAG_AFFECTS.iter().find(|(n, ..)| *n == name).map(|(_, zh, en)| pick(lang, zh, en))
 }
 
 fn build_flags(platform: Platform, l: &Lists) -> Vec<BuildFlag> {
@@ -468,35 +602,34 @@ fn build_flags(platform: Platform, l: &Lists) -> Vec<BuildFlag> {
     let any_enc = |suffix: &str| l.encoders.iter().any(|e| e.ends_with(suffix));
     let filter = |n: &str| l.filters.contains(n);
     let hw = |n: &str| l.hwaccels.iter().any(|h| h == n);
-    let flag =
-        |name: &str, present: bool, affects: &str| BuildFlag { name: name.into(), present, affects: affects.into() };
+    let flag = |name: &str, present: bool| BuildFlag {
+        name: name.into(),
+        present,
+        affects: flag_affects(name, Lang::ZhCn).unwrap_or_default().into(),
+    };
 
     let mut flags = vec![
-        flag("libx265", enc("libx265"), "HEVC 软编、杜比视界保留"),
-        flag("libx264", enc("libx264"), "H.264 软编"),
-        flag("libsvtav1", enc("libsvtav1"), "AV1 软编（含 HDR10）"),
-        flag("libplacebo", filter("libplacebo"), "最佳色调映射、杜比视界 P5 映射"),
-        flag("vulkan", hw("vulkan"), "libplacebo 运行依赖"),
-        flag("opencl", hw("opencl") || filter("tonemap_opencl"), "GPU 色调映射"),
-        flag("libzimg", filter("zscale"), "CPU 色调映射兜底"),
-        flag("libvmaf", filter("libvmaf"), "画质评分（v2）"),
-        flag("libbluray", l.protocols.contains("bluray"), "蓝光原盘读取（v2）"),
-        flag("libopus", l.audio_encoders.contains("libopus"), "Opus 音频编码"),
-        flag(
-            "libfdk_aac",
-            l.audio_encoders.contains("libfdk_aac"),
-            "高质量 AAC / HE-AAC（官方构建均不含，已用原生 aac 替代）",
-        ),
+        flag("libx265", enc("libx265")),
+        flag("libx264", enc("libx264")),
+        flag("libsvtav1", enc("libsvtav1")),
+        flag("libplacebo", filter("libplacebo")),
+        flag("vulkan", hw("vulkan")),
+        flag("opencl", hw("opencl") || filter("tonemap_opencl")),
+        flag("libzimg", filter("zscale")),
+        flag("libvmaf", filter("libvmaf")),
+        flag("libbluray", l.protocols.contains("bluray")),
+        flag("libopus", l.audio_encoders.contains("libopus")),
+        flag("libfdk_aac", l.audio_encoders.contains("libfdk_aac")),
     ];
     match platform {
         Platform::Windows | Platform::Linux => {
-            flags.push(flag("libvpl", any_enc("_qsv"), "Intel QSV 硬件编码"));
-            flags.push(flag("nvenc", any_enc("_nvenc"), "NVIDIA 硬件编码"));
+            flags.push(flag("libvpl", any_enc("_qsv")));
+            flags.push(flag("nvenc", any_enc("_nvenc")));
             if platform == Platform::Windows {
-                flags.push(flag("amf", any_enc("_amf"), "AMD 硬件编码"));
+                flags.push(flag("amf", any_enc("_amf")));
             }
         }
-        Platform::Macos => flags.push(flag("videotoolbox", any_enc("_videotoolbox"), "Apple 硬件编码")),
+        Platform::Macos => flags.push(flag("videotoolbox", any_enc("_videotoolbox"))),
     }
     flags
 }
@@ -643,8 +776,36 @@ mod tests {
     }
 
     fn run_probe(runner: &FakeFfmpeg, env: &FakeEnv, platform: Platform, app_dir: &Path, force: bool) -> Capabilities {
-        let ctx = ProbeContext { env, runner, platform, app_dir: app_dir.to_path_buf(), user_path: None };
+        run_probe_in(runner, env, platform, app_dir, force, Lang::ZhCn)
+    }
+
+    fn run_probe_in(
+        runner: &FakeFfmpeg,
+        env: &FakeEnv,
+        platform: Platform,
+        app_dir: &Path,
+        force: bool,
+        lang: Lang,
+    ) -> Capabilities {
+        let ctx = ProbeContext { env, runner, platform, app_dir: app_dir.to_path_buf(), user_path: None, lang };
         probe(&ctx, force, &|_| {})
+    }
+
+    fn han(t: &str) -> bool {
+        t.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+    }
+
+    /// 环境页上由 VidForge 生成的文字（ffmpeg 原文除外）
+    fn our_texts(c: &Capabilities) -> Vec<String> {
+        let mut t = vec![c.status_detail.clone(), c.version_number.clone(), c.build_source.clone()];
+        t.extend(c.notes.iter().cloned());
+        t.extend(c.build_flags.iter().map(|f| f.affects.clone()));
+        t.extend(c.tonemap.iter().map(|x| x.note.clone()));
+        t.extend(c.external.iter().map(|x| x.purpose.clone()));
+        t.extend(
+            c.encoders.iter().filter(|e| e.failure == Some(FailureKind::NotBuilt)).filter_map(|e| e.error.clone()),
+        );
+        t
     }
 
     #[test]
@@ -768,6 +929,7 @@ mod tests {
             platform: Platform::Windows,
             app_dir: dir.path().to_path_buf(),
             user_path: Some(PathBuf::from(r"C:\ff\bin")),
+            lang: Lang::ZhCn,
         };
         let second = probe(&ctx, false, &|_| {});
         assert_eq!(second.locate_source, Some(crate::model::LocateSource::User));
@@ -803,6 +965,83 @@ mod tests {
         assert!(!lp.available);
         assert!(lp.note.contains("Vulkan"));
         assert_eq!(caps.pick_tonemap(), Some(ToneMapPipeline::TonemapOpencl));
+    }
+
+    #[test]
+    fn english_texts_come_from_the_cache_without_reprobing() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = installed_env();
+        // 先用中文探测并写缓存，再用英文命中缓存：说明换成英文，而且没有重新探测
+        let zh = run_probe_in(
+            &FakeFfmpeg::new("gyan-essentials-9.0.1"),
+            &env,
+            Platform::Windows,
+            dir.path(),
+            true,
+            Lang::ZhCn,
+        );
+        assert!(zh.build_flags.iter().any(|f| f.affects == "AV1 软编（含 HDR10）"));
+        let runner = FakeFfmpeg::new("gyan-essentials-9.0.1");
+        let en = run_probe_in(&runner, &env, Platform::Windows, dir.path(), false, Lang::En);
+        assert!(runner.calls.lock().unwrap().iter().all(|a| a.iter().any(|s| s == "-version")), "应命中缓存");
+        let texts = our_texts(&en);
+        assert!(texts.iter().all(|t| !han(t)), "英文界面仍有中文：{texts:?}");
+        assert!(en.build_flags.iter().any(|f| f.affects == "AV1 software encoding (with HDR10)"));
+        let lp = en.tonemap.iter().find(|t| t.id == ToneMapPipeline::Libplacebo).unwrap();
+        assert_eq!(lp.note, "This ffmpeg was built without libplacebo");
+        let av1 = en.encoder(EncoderId::Libsvtav1).unwrap();
+        assert_eq!(av1.error.as_deref(), Some("This ffmpeg was built without this encoder"));
+        // 缓存本身仍是中文原文，再用中文读回来一字不差
+        let back = run_probe_in(
+            &FakeFfmpeg::new("gyan-essentials-9.0.1"),
+            &env,
+            Platform::Windows,
+            dir.path(),
+            false,
+            Lang::ZhCn,
+        );
+        assert_eq!(our_texts(&back), our_texts(&zh));
+    }
+
+    #[test]
+    fn english_status_texts_for_problem_environments() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = run_probe_in(
+            &FakeFfmpeg::new("gyan-essentials-6.0"),
+            &installed_env(),
+            Platform::Windows,
+            dir.path(),
+            true,
+            Lang::En,
+        );
+        assert!(old.status_detail.starts_with("ffmpeg 6.0 is older than the required 7.1"), "{}", old.status_detail);
+        let none = run_probe_in(
+            &FakeFfmpeg::new("none"),
+            &FakeEnv(HashSet::new()),
+            Platform::Windows,
+            dir.path(),
+            true,
+            Lang::En,
+        );
+        assert!(none.status_detail.starts_with("ffmpeg and ffprobe were not found"), "{}", none.status_detail);
+        let env = FakeEnv([PathBuf::from(r"C:\ff\bin").join("ffmpeg.exe")].into_iter().collect());
+        let broken =
+            run_probe_in(&FakeFfmpeg::new("gyan-full-9.0.1"), &env, Platform::Windows, dir.path(), true, Lang::En);
+        assert!(broken.status_detail.contains("has ffmpeg but no ffprobe"), "{}", broken.status_detail);
+        for c in [&old, &none, &broken] {
+            assert!(our_texts(c).iter().all(|t| !han(t)), "{:?}", our_texts(c));
+        }
+    }
+
+    #[test]
+    fn device_failures_keep_the_raw_error_in_both_languages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = dev_machine();
+        f.device_fail.insert("vulkan", "[Vulkan @ 1] No devices found\r\nDevice creation failed: -22.\r\n");
+        let en = run_probe_in(&f, &installed_env(), Platform::Windows, dir.path(), true, Lang::En);
+        let lp = en.tonemap.iter().find(|t| t.id == ToneMapPipeline::Libplacebo).unwrap();
+        assert!(lp.note.starts_with("The Vulkan device failed to initialize: "), "{}", lp.note);
+        assert!(matches!(&lp.block, Some(TonemapBlock::Device { device, .. }) if device == "Vulkan"));
     }
 
     #[test]

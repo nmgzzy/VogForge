@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use vidforge_core::ffmpeg::exec::{Runner, SystemRunner, args};
+use vidforge_core::i18n::Lang;
 use vidforge_core::import::import_paths;
 use vidforge_core::model::{HdrKind, MasteringPrimaries, MediaInfo, SourceHint};
 
@@ -249,7 +250,7 @@ fn synthesized_media_through_the_real_import_path() {
     fs::write(dir.path().join("readme.txt"), "not a video").unwrap();
     fs::write(dir.path().join("broken.mp4"), b"\x00\x00\x00\x18ftypmp42 truncated").unwrap();
 
-    let r = import_paths(&[dir.path().to_path_buf()], &exe(&bin, "ffprobe"), &SystemRunner, 4, &|_| {});
+    let r = import_paths(&[dir.path().to_path_buf()], &exe(&bin, "ffprobe"), &SystemRunner, 4, Lang::ZhCn, &|_| {});
     assert_eq!(r.skipped, 1, "readme.txt 应被跳过");
     assert_eq!(r.failures.len(), 1, "broken.mp4 应失败：{:?}", r.failures);
     assert!(r.failures[0].reason.contains("文件不完整") || r.failures[0].reason.contains("无法"), "{:?}", r.failures);

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::write_json_atomic;
+use crate::i18n::{Lang, pick};
 use crate::model::{EventLevel, Job, JobEvent, JobProgress, JobStatus, QueueSnapshot};
 
 use super::files;
@@ -46,7 +47,7 @@ pub fn load(path: &Path) -> QueueSnapshot {
 }
 
 /// 上次退出时没跑完的任务回到排队状态，删掉它们留下的临时文件；返回恢复的任务数
-pub fn recover(jobs: &mut [Job], now_ms: u64) -> usize {
+pub fn recover(jobs: &mut [Job], now_ms: u64, lang: Lang) -> usize {
     let mut n = 0;
     for job in jobs.iter_mut().filter(|j| j.status.active()) {
         if !job.output_path.is_empty() {
@@ -57,7 +58,13 @@ pub fn recover(jobs: &mut [Job], now_ms: u64) -> usize {
         job.events.push(JobEvent {
             at: now_ms,
             level: EventLevel::Warn,
-            message: "上次退出时这个任务没有完成，已删除临时文件并重新排队，将从头开始".into(),
+            message: pick(
+                lang,
+                "上次退出时这个任务没有完成，已删除临时文件并重新排队，将从头开始",
+                "This job was unfinished when the app last exited; its temporary file was deleted and it will start over",
+            )
+            .into(),
+            detail: None,
         });
         n += 1;
     }
@@ -131,7 +138,7 @@ mod tests {
             job("pause", JobStatus::Paused, &dir.path().join("b.mkv")),
             job("done", JobStatus::Done, &dir.path().join("c.mkv")),
         ];
-        assert_eq!(recover(&mut jobs, 99), 2);
+        assert_eq!(recover(&mut jobs, 99, Lang::ZhCn), 2);
         assert_eq!(
             jobs.iter().map(|j| j.status).collect::<Vec<_>>(),
             [JobStatus::Queued, JobStatus::Queued, JobStatus::Done]

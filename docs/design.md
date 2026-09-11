@@ -1,6 +1,6 @@
 # VidForge 设计文档
 
-版本 0.1 · 2026-09-11
+版本 0.1 · 2026-09-12
 
 配套文档：[需求](requirements.md) · [实施计划](plan.md) · [TODO](todo.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
@@ -22,7 +22,7 @@
 │  crates/vidforge-core/  —— 全部业务逻辑，无 Tauri 依赖     │
 │                                                          │
 │  ffmpeg/    locate 定位 · capability 探测 · probe 分析     │
-│             classify 失败分类 · progress 进度解析          │
+│             classify 失败分类 · errors 报错说明 · progress │
 │                                                          │
 │  pipeline/  args 命令构建 ★ · strategy 策略推荐 ★         │
 │             fidelity 保真求解 ★ · loudness 响度            │
@@ -32,7 +32,7 @@
 │  queue/     调度 · worker 执行 · fallback 回退             │
 │             process 进程 · files 输出安全 · persist 持久化 │
 │  verify     输出校验与保真度报告                           │
-│  external   可选外部工具探测                              │
+│  i18n       说明文字的语言 · external 可选外部工具探测     │
 └──────────────────────────────────────────────────────────┘
                         │ 子进程
                   ffmpeg / ffprobe
@@ -148,7 +148,7 @@ Capabilities
 ├─ encoders: Vec<EncoderProbe>          // 第 3 层：当前平台关心的全部编码器
 │   └─ EncoderProbe { id, vendor, codec, usable, ten_bit, error, failure: Option<FailureKind> }
 ├─ hwaccels, devices: Vec<DeviceProbe { id, available, error }>   // 第 2 层
-├─ tonemap: Vec<TonemapProbe { id, available, note }>             // 按 5.3 的顺序
+├─ tonemap: Vec<TonemapProbe { id, available, note, block }>      // 按 5.3 的顺序；block 是不可用的原因
 ├─ dolby_vision_encode, dovi_split
 ├─ external: Vec<ExternalTool>          // dovi_tool / hdr10plus_tool / mkvmerge
 ├─ gpus: Vec<GpuInfo { name, driver }>, platform, probed_at
@@ -179,6 +179,8 @@ Capabilities
 - 色调映射管线除了检查滤镜存在，还要检查依赖设备（libplacebo 依赖 Vulkan、tonemap_opencl 依赖 OpenCL），最后用带 BT.2020/PQ 标签的测试图真跑 2 帧。
 
 三层探测用 4 路并发，开发机上完整跑一遍约 4–5 秒。结果缓存在 `~/.vidforge/capabilities.json`，key = ffmpeg 路径 + 文件修改时间 + 文件大小 + 版本串 + GPU 名称 + 驱动版本，外加缓存格式版本号，驱动更新或探测逻辑变化后自动失效重测。命中缓存时仍会重新查找外部工具，开销可以忽略。
+
+缓存里的说明文字一律是中文原文，返回前由 `localize` 按界面语言从结构化字段重新生成（编译开关的影响按名字查表、色调映射按 `block` 生成原因、`NotBuilt` 的编码器换成对应语言），所以切换语言只读缓存、不重新探测。ffmpeg 自己的报错（设备初始化失败、试编码失败的那一行）保持原文。
 
 **任务级 dry-run**：每个任务开始前，用这个任务真实的编码参数（preset/profile/pix_fmt/RC 全套）换成 lavfi 输入跑 3 帧。耗时不到 1 秒，能抓住"设备可用但这组参数不支持"的情况，比跑了 20 分钟才失败要好得多。
 
@@ -228,7 +230,7 @@ Capabilities
 
 ```
 [全局]   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
-[输入]   -hwaccel auto [-init_hw_device opencl=ocl -filter_hw_device ocl] -i <path>
+[输入]   -hwaccel d3d11va|auto [-init_hw_device opencl=ocl -filter_hw_device ocl] -i <path>
 [映射]   -map 0:v:0 -map 0:<音轨>… [-map 0:s? | 文本字幕] [-map 0:t?] [-map_chapters 0] -map_metadata 0
 [视频]   -c:v … -pix_fmt … [preset/profile] [码率控制] [-x265-params] [-g] [-dolbyvision 0|1] [附加参数] [-pass 2 -passlogfile …]
 [滤镜]   -vf <缩放 / 色调映射 / tpad>
@@ -241,7 +243,7 @@ Capabilities
 
 阶段 4 用真实转码确定的几条规则：
 
-- 硬解一律 `-hwaccel auto`，不按编码器写 `-hwaccel qsv`（9.0 会把帧留在 GPU 上导致失败，技术事实文档 7.5 节）。保留杜比视界或 HDR10+ 时不硬解。
+- 硬解在 Windows 上有 D3D11 设备时写 `-hwaccel d3d11va`，其余写 `-hwaccel auto`；不按编码器写 `-hwaccel qsv`（9.0 会把帧留在 GPU 上导致失败）。auto 在 Windows 上先试 DXVA2，会话断开时 ffmpeg 会崩溃（技术事实文档 7.5 节）。保留杜比视界或 HDR10+ 时不硬解。
 - 不写 `-color_primaries` / `-color_trc`（9.0 不生效，12 节）：保留 HDR 靠解码帧自带的标签，转 SDR 靠色调映射滤镜打 BT.709 标签。
 - 转固定帧率时，视频比音频短半帧以上就在滤镜链末尾加 `tpad` 补齐（4.3 节）。
 - `-y` 是因为输出是应用自己管理的临时文件；与目标文件的冲突在改名那一步按设置处理。
@@ -349,7 +351,7 @@ speed_smoothed = 0.8 * prev + 0.2 * current
 - 同名冲突策略：跳过 / 自动加序号 / 覆盖。覆盖在设置里选择时要求用户确认（会直接替换已有文件、无法撤销）；逐个文件弹窗会卡住无人值守的批量任务，所以不在执行时再问。
 - 源文件永远不作为输出目标：输出目录、命名模板与扩展名恰好让目标等于源文件时，即使策略是覆盖也改用序号，并在时间线里说明。
 - 运行中任务选定的目标在队列状态里登记（选定与登记在同一把锁里完成），并发的同名任务不会写同一个临时文件。
-- 源文件绝不自动删除。"完成后动作"默认"无操作"。
+- 源文件绝不静默删除。"完成后动作"默认"无操作"，可选"打开输出目录"或"把源文件移到回收站"。后者在一批任务全部跑完时确认一次，只处理校验全部通过、而且没有其他未完成任务要用的源文件；界面只传任务 id，由 `Queue::trashable_sources` 判断哪些文件能动。
 
 持久化：队列状态写 `~/.vidforge/queue.json`，应用重启后恢复未完成任务。恢复是重新开始而非续传，因为 ffmpeg 本身不支持断点续传；分段编码加 concat 的方案留到 v2。
 
@@ -359,20 +361,24 @@ speed_smoothed = 0.8 * prev + 0.2 * current
 - 一个任务的执行顺序：按冲突策略定下写入位置 → 按计划重新生成命令（不用界面传来的参数）→ 硬件编码器预检 → 响度测量（开了响度标准化时）→ 一遍或两遍编码 → 删除统计文件 → 改名为最终文件（期间目标位置又出现同名文件时再按策略处理一次）→ ffprobe 校验。
 - 暂停是挂起进程（Windows `SuspendThread`，类 Unix `SIGSTOP`）；取消是结束进程并删除临时文件；"全部暂停"挂起进行中的任务、排队的不开始，"全部继续"只恢复被它挂起的任务。
 - 状态经 `EventSink` 推给界面：结构或状态变化推完整快照（`queue://snapshot`，同时落盘），运行中的进度单独推（`queue://progress`，不落盘）。
-- 应用退出时结束正在跑的 ffmpeg、不改任务状态；下次启动时这些任务按"没跑完"处理：删掉残留的临时文件与统计文件，重新排队并在时间线里写一条警告。ffmpeg 放在"句柄关闭即结束"的作业对象里，应用被强杀时也不会留下孤儿进程（技术事实文档 13 节）。
+- 应用退出时结束正在跑的 ffmpeg、不改任务状态；下次启动时这些任务按"没跑完"处理：删掉残留的临时文件与统计文件，重新排队并在时间线里写一条警告。应用被强杀时也不留孤儿进程：Windows 把 ffmpeg 放进"句柄关闭即结束"的作业对象，Linux 用 `PR_SET_PDEATHSIG`，macOS 给每个 ffmpeg 配一个 sh 看门狗，父进程消失后一秒内结束它（技术事实文档 13 节）。
+- 失败事件的正文是说明加可行动作（4.10 节），ffmpeg 原文放在事件的 `detail` 里，界面折叠显示；输出读不出来时，完成事件同样带上 ffprobe 的原文。
+- 校验阶段数帧（MKV 输出）要读完整个文件，同样用可暂停、可取消的进程跑。核对期间点取消：输出已经写完、改好名，保留下来，任务记为取消（不算完成，也不触发完成后动作）。
+- 一批任务跑完（进行中、排队、暂停的都没有了，且不是被"全部暂停"停下）时，按设置发系统通知、执行完成后动作（`src/stores/run-end.ts`）。
 
 ### 4.8 输出校验（`verify.rs`）
 
-转码后对输出跑 ffprobe，逐项比对。阶段 6 实现了基础完整性（时长、视频编码、固定帧率、音轨数、字幕数、章节，`verify::basic_report`），保真度逐项核对在此基础上扩展：
+转码后对输出跑 ffprobe，逐项比对（`verify::report`）。基础完整性（时长、视频编码、固定帧率、音画对齐、色彩标签、音轨数、复制轨编码、字幕数、章节）总是核对，保真度项目只核对用户勾选且源里有的：
 
 | 项 | 判据 |
 |---|---|
 | 时长 | 与源差值 < 0.5 秒 |
-| 帧数 | 未改帧率时应与源一致（容差 1 帧） |
+| 帧数 | 原样复制一帧不差；重编码且保持帧率时与源一致（容差 1 帧）；转固定帧率时等于目标帧率 × 时长（容差 2 帧）。ffmpeg 写的 MKV 没有 `nb_frames`，校验时用 `-count_packets` 数一遍（只解复用）；源没有帧数记录时不核对 |
 | 流数量 | 音轨 / 字幕数符合 plan 预期 |
 | 色彩标签 | primaries / transfer / space 符合 plan |
-| HDR10 元数据 | 若勾选保留，MDCV 与 CLL 必须存在，且按有理数求值比较数值（容差 1e-4） |
+| HDR10 元数据 | 若勾选保留，MDCV 与 CLL 必须存在，母版色域、亮度范围、MaxCLL、MaxFALL 按有理数求值后逐项比较（容差 1e-3） |
 | 杜比视界 | 若勾选保留，流级配置记录与首帧 RPU side data 必须存在 |
+| HDR10+ | 若勾选保留，输出首帧必须带 HDR10+ 动态元数据（只有原样封装做得到，重编码如实标红） |
 | 音频编码 | 标记 copy 的轨道，编码必须与源一致 |
 
 输出为保真度报告：用户勾选的每一项对应实际结果，未达预期标红并给出原因。存在未修正冲突就提交的任务，报告必须如实显示"未保留"，完成事件也以警告记录，不得一律写"校验通过"。这让"尽量保留"成为可验证的事实，而不是口头承诺。
@@ -443,6 +449,36 @@ r_frame_rate == avg_frame_rate                     // 确实是 CFR
 ```
 
 
+### 4.10 报错说明（`ffmpeg/errors.rs`）
+
+需求 F-9.4 要求不直接把 ffmpeg 的报错抛给用户。`errors::explain(stderr, lang)` 按一张规则表（stderr 子串，不区分大小写，取第一个命中的）给出原因与可行动作，另外保留最能说明问题的那一行原文：
+
+| 命中 | 原因 | 动作 |
+|---|---|---|
+| `moov atom not found` | 文件不完整或已损坏 | 用原设备重新导出，或用 untrunc 修复 |
+| `No such file or directory` | 找不到文件 | 重新导入 |
+| `Permission denied` | 没有访问权限 | 检查权限或换输出目录 |
+| `No space left on device` | 磁盘空间不足 | 清理磁盘或换输出目录 |
+| `out of memory` | 内存或显存不足 | 关掉占显存的程序，GPU 并发调到 1 |
+| `Unrecognized option` | 附加参数里有不认识的选项 | 检查"更多参数" |
+| `Error setting option` / `Invalid value` | 参数值不被接受 | 检查附加参数或恢复推荐值 |
+| 滤镜初始化失败 | 滤镜无法处理这段画面 | 换色调映射管线或关掉缩放 |
+| 编码器打不开 | 编码器无法按这组参数启动 | 编码器改回自动，降位深 |
+| 解码错误 | 源里有损坏的片段 | 播放器检查，关掉硬件解码 |
+| 都没命中 | ffmpeg 执行失败 | 展开原文，求助时复制命令 |
+
+用在三处：导入失败（`ImportFailure.reason` + `detail`）、软件编码器与原样封装失败（队列不再回退，直接说明）、硬件回退与放弃时的时间线事件（正文是回退说明，原文在 `detail`）。硬件编码失败怎么回退仍由 `classify.rs` 决定，两张表各管一件事。
+
+### 4.11 界面语言（需求 F-9.1）
+
+中文为主，可切换英文，设置项 `language`。原则是文字在产生的地方按语言生成，不维护键值表：
+
+- Rust 用 `tr!(lang, "中文 {}", "English {}", 参数)` 与 `pick(lang, 中, 英)`（`i18n.rs`）。决策理由、保真度判定与修正按钮、"不建议转码"、队列事件与报错说明、校验报告、导入失败、环境探测的说明都按调用时的语言生成；`evaluate` 与 `restricted` 从设置取语言。
+- 前端用 `tr("中文", "English")`（`src/i18n`）。App 渲染时同步当前语言，语言一变整个界面以新 key 重新挂载，所以模块级的列表都改成函数（`scenarios()`、`fidelityHint()`、`vendorLabel()`）。
+- 计划本身与语言无关：命令段用类别 `SegmentKind` 而不是中文标签，界面按语言显示段名；新生成的兼容音轨标题写英文（`AAC Stereo (downmix)`），任何语言的播放器都能读，计划存进队列后也不随界面语言变化。命名模板的 `{scenario}` 按语言取词。
+- 已经发生的记录（任务时间线、导入报告）保持产生时的语言，不回头翻译。
+- 能力快照的说明按 4.1 节在读取时换语言；前端取能力时直接带上当前语言（`get_capabilities(force, lang)`），不必等设置保存完，探测途中换了语言则结束后再取一次。
+
 ## 5. 若干实现细节
 
 ### 5.1 ffmpeg 定位顺序
@@ -510,8 +546,8 @@ macOS 的 Homebrew 构建三条管线全缺，这是跨平台最大的坑，必�
 
 检测到无损或 Atmos 音轨且用户勾选保留时，默认生成两条输出轨：
 
-1. 原轨 `copy`，标题标注"TrueHD 7.1 Atmos（原始）"
-2. 兼容轨，按容器选择：MKV 用 Opus 或 AAC；MP4 用 AAC 2.0 加可选 E-AC-3 5.1
+1. 原轨 `copy`，保留源里的标题
+2. 兼容轨，按容器选择：MKV 用 Opus 或 AAC；MP4 用 AAC 2.0 加可选 E-AC-3 5.1。标题写英文（`AAC Stereo (downmix)`、`DD+ 5.1 (from Atmos, without Atmos metadata)`），见 4.11 节
 
 多声道降混到 2.0 时使用显式 `pan` 矩阵（中置 +3dB 增强对白）加 `alimiter` 防削波，而非简单 `-ac 2`。需要响度标准化时使用两遍 `loudnorm`，单遍会有起始段 ramp-up 问题。
 
@@ -594,12 +630,15 @@ wasm 里拿不到系统时间，命名模板的 `{date}` 由前端传入本地�
 
 | 命令 / 事件 | 作用 |
 |---|---|
-| `get_capabilities(force)` | 探测环境；`force = false` 时优先用缓存。并发调用会串行化 |
+| `get_capabilities(force, lang)` | 探测环境；`force = false` 时优先用缓存，说明按 `lang` 生成。并发调用会串行化 |
 | `get_settings` / `save_settings(settings)` | 读写设置，后端把越界值拉回合理范围后返回；保存后同步给队列（并发数、冲突策略、硬件开关） |
 | 事件 `probe://progress` | 探测进度 `ProbeProgress { stage, done, total }` |
 | `import_media(paths)` / 事件 `import://progress` | 分析文件与文件夹 |
 | `queue_snapshot` / `queue_add(items)` / `queue_control(op)` | 队列：取完整状态、加入（后端按计划重新生成命令）、操作（`QueueOp`：暂停、继续、取消、重试、移除、换序、全部暂停、清除已完成） |
 | 事件 `queue://snapshot` / `queue://progress` | 队列结构或状态变化推完整快照；运行中推进度 |
+| `ffmpeg_install_dir` / `open_ffmpeg_dir` | 应用自己的 ffmpeg 目录（`~/.vidforge/ffmpeg/bin`，不存在就建），引导下载时让用户把 ffmpeg 放进去 |
+| `trash_sources(ids)` | 把校验通过的任务的源文件移到回收站，返回实际移走的文件 |
+| 通知插件 `sendNotification` | 一批任务跑完时的系统通知 |
 
 `useQueue` 只镜像后端推来的状态，不自己推进任何任务。浏览器预览的 mock 后端带一个模拟队列（`src/backend/mock-queue.ts`），调度规则与后端一致，接口与事件相同。决策引擎用的能力按设置里的硬件编码 / 解码开关收紧（`src/stores/engine-caps.ts`，与后端执行时一致），环境页展示的仍是原始探测结果。
 
@@ -610,6 +649,12 @@ wasm 里拿不到系统时间，命名模板的 `{date}` 由前端传入本地�
 - 推荐说明默认只显示"字段 · 取值"；警告与提示类条目展开理由，普通条目点击单行或"展开全部说明"再看。
 - 同一条提示只出现一处。例如可变帧率的剪辑风险由帧率控件提示，推荐说明里不再重复。
 - 预估卡片只保留体积区间、占源比例、一条对比条、耗时与编码方式。
+
+### 6.7 首次启动引导与 ffmpeg 下载指引
+
+设置里 `onboarded` 为假时弹出三步引导（`components/Onboarding.tsx`，需求 F-9.5）：检查环境（顺便选界面语言）→ 能力说明（CPU 编码、各厂商 GPU 编码、HDR 转 SDR、杜比视界、逐项校验）→ 按能力给的建议。走完或跳过后不再出现，设置页可以重新打开。
+
+找不到 ffmpeg、版本过低或缺关键库（libx265 / libsvtav1 / libplacebo / libzimg）时，环境页与引导里给出下载指引（需求 F-8.3）：按平台列出推荐构建（Windows gyan.dev full 或 BtbN gpl，macOS jellyfin-ffmpeg，Linux BtbN 或 jellyfin），说明解压后把 ffmpeg 与 ffprobe 放进应用的 ffmpeg 目录（定位时排在设置之后第一个查找）或手动指定目录，最后重新探测。不做应用内自动下载解压：各构建的压缩格式与目录结构不一，也不想替用户决定装哪个版本。
 
 ## 7. 测试策略
 
@@ -623,7 +668,9 @@ wasm 里拿不到系统时间，命名模板的 `{date}` 由前端传入本地�
 | 队列 | 并发票据、取消无残留、暂停与全部暂停、每类失败的回退、运行很久后失败改软编、两遍编码、同名冲突、崩溃后恢复（脚本化的假进程） | `queue_sim.rs` |
 | 集成 | 合成素材 → 分析 → 生成命令 → 真实 ffmpeg 转码 → ffprobe 核对输出 | `media_real.rs`、`transcode_real.rs` |
 | 队列端到端 | 真实队列 + 真实 ffmpeg：10 个合成素材覆盖 8 个场景与两遍编码、真实挂起与继续、取消无残留、NVENC 预检失败回退到 QSV、响度标准化达到 -16 LUFS | `queue_real.rs` |
-| 前端 | store 逻辑、保真度状态渲染、码率控制交互；经 wasm 调用真实引擎 | Vitest |
+| 前端 | store 逻辑、保真度状态渲染、码率控制交互、首次引导、跑完后的通知与完成后动作；经 wasm 调用真实引擎 | Vitest |
+| 界面语言 | 英文下引擎输出（全部样本 × 场景 × 修正）与每个页面都不残留中文（素材自带的名字除外），能力说明从缓存换语言不重新探测 | `engine_behavior.rs`、`capability.rs`、`english.test.tsx` |
+| 持续集成 | 前端检查（Linux）；Rust 格式、clippy、全部测试与 wasm 构建在 Windows 与 macOS 上各跑一遍，装真实 ffmpeg（macOS 用 Homebrew 版） | `.github/workflows/ci.yml` |
 | 手动 | 见需求文档第 6 节验收标准 | 清单核对 |
 
 **合成测试素材**是集成测试能跑起来的关键。用 ffmpeg 自己生成带 BT.2020/PQ 加 MDCV/MaxCLL 的 HDR10 片段、多音轨片段、VFR 片段，这样测试不依赖用户手里的蓝光原盘，CI 里也能跑。生成命令直接写在集成测试里（`media_real.rs`、`transcode_real.rs`），不另设脚本，保证素材与断言同源。

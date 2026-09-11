@@ -3,7 +3,7 @@ source: crates/vidforge-core/tests/args_facts.rs
 expression: text
 ---
 全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
-输入   -hwaccel auto -i D:\素材\录屏\Screen_Recording_20260901_213355.mp4
+输入   -hwaccel d3d11va -i D:\素材\录屏\Screen_Recording_20260901_213355.mp4
 映射   -map 0:0 -map 0:1 -map_metadata 0
 视频   -c:v libx264 -pix_fmt yuv420p -profile:v high -preset medium -crf 15 -g 30
 帧率   -fps_mode:v cfr -r 60

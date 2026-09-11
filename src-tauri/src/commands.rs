@@ -3,12 +3,15 @@
 use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use vidforge_core::config::{self, Settings};
 use vidforge_core::ffmpeg::capability::{ProbeContext, probe};
 use vidforge_core::ffmpeg::exec::SystemRunner;
 use vidforge_core::ffmpeg::locate::SystemEnv;
+use vidforge_core::i18n::{Lang, pick};
 use vidforge_core::import::import_paths;
 use vidforge_core::model::{Capabilities, EnvStatus, ImportResult, Platform, QueueItem, QueueOp, QueueSnapshot};
+use vidforge_core::tr;
 
 use crate::state::AppState;
 
@@ -19,8 +22,8 @@ const IMPORT_WORKERS: usize = 4;
 
 type CmdResult<T> = Result<T, String>;
 
-/// 在阻塞线程里调用：探测环境并更新状态。`force` 为 false 时优先用缓存
-fn probe_blocking(app: &AppHandle, force: bool) -> CmdResult<Capabilities> {
+/// 在阻塞线程里调用：探测环境并更新状态。`force` 为 false 时优先用缓存；`lang` 缺省时用设置里的语言
+fn probe_blocking(app: &AppHandle, force: bool, lang: Option<Lang>) -> CmdResult<Capabilities> {
     let state = app.state::<AppState>();
     let _guard = state.probe_lock.lock().map_err(|e| e.to_string())?;
     let user_path = state.settings.lock().map_err(|e| e.to_string())?.ffmpeg_path.clone().map(PathBuf::from);
@@ -30,6 +33,7 @@ fn probe_blocking(app: &AppHandle, force: bool) -> CmdResult<Capabilities> {
         platform: Platform::current(),
         app_dir: state.app_dir.clone(),
         user_path,
+        lang: lang.unwrap_or_else(|| state.lang()),
     };
     let emitter = app.clone();
     let caps = probe(&ctx, force, &move |p| {
@@ -45,14 +49,14 @@ fn current_caps(app: &AppHandle) -> CmdResult<Capabilities> {
     let cached = app.state::<AppState>().caps.lock().map_err(|e| e.to_string())?.clone();
     match cached {
         Some(c) => Ok(c),
-        None => probe_blocking(app, false),
+        None => probe_blocking(app, false, None),
     }
 }
 
-/// 探测环境能力。`force` 为 false 时优先用缓存。
+/// 探测环境能力。`force` 为 false 时优先用缓存。界面切换语言时直接带上新语言，不必等设置保存完
 #[tauri::command]
-pub async fn get_capabilities(app: AppHandle, force: bool) -> CmdResult<Capabilities> {
-    tauri::async_runtime::spawn_blocking(move || probe_blocking(&app, force)).await.map_err(|e| e.to_string())?
+pub async fn get_capabilities(app: AppHandle, force: bool, lang: Option<Lang>) -> CmdResult<Capabilities> {
+    tauri::async_runtime::spawn_blocking(move || probe_blocking(&app, force, lang)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -64,7 +68,8 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
     let settings = settings.sanitized();
-    config::save_settings(&state.app_dir, &settings).map_err(|e| format!("保存设置失败：{e}"))?;
+    config::save_settings(&state.app_dir, &settings)
+        .map_err(|e| tr!(settings.language, "保存设置失败：{}", "Could not save settings: {}", e))?;
     *state.settings.lock().map_err(|e| e.to_string())? = settings.clone();
     state.sync_queue();
     Ok(settings)
@@ -87,17 +92,66 @@ pub fn queue_control(state: State<'_, AppState>, op: QueueOp) -> CmdResult<()> {
     state.queue.apply(op)
 }
 
+/// 应用自己的 ffmpeg 目录（引导下载后解压到这里，定位时排在设置之后第一个查找），不存在就建好
+#[tauri::command]
+pub fn ffmpeg_install_dir(state: State<'_, AppState>) -> CmdResult<String> {
+    let dir = config::bundled_ffmpeg_dir(&state.app_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.display().to_string())
+}
+
+/// 在文件管理器里打开应用的 ffmpeg 目录
+#[tauri::command]
+pub fn open_ffmpeg_dir(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let dir = ffmpeg_install_dir(state)?;
+    app.opener().open_path(dir, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// 把已完成且校验通过的任务的源文件移到回收站（需求 F-6.10，界面已让用户确认过）。
+/// 只接受任务 id，由队列判断哪些源文件可以动；返回实际移走的文件
+#[tauri::command]
+pub fn trash_sources(state: State<'_, AppState>, ids: Vec<String>) -> CmdResult<Vec<String>> {
+    let lang = state.lang();
+    let mut moved = Vec::new();
+    let mut failed = Vec::new();
+    for path in state.queue.trashable_sources(&ids) {
+        match trash::delete(&path) {
+            Ok(()) => moved.push(path.display().to_string()),
+            Err(e) => failed.push(tr!(lang, "{}（{}）", "{} ({})", path.display(), e)),
+        }
+    }
+    if failed.is_empty() {
+        Ok(moved)
+    } else {
+        let list = failed.join(pick(lang, "；", "; "));
+        Err(tr!(
+            lang,
+            "有 {} 个源文件没能移到回收站：{}",
+            "{} source file(s) could not be moved to the trash: {}",
+            failed.len(),
+            list
+        ))
+    }
+}
+
 /// 导入文件与文件夹（文件夹递归扫描），逐个用 ffprobe 分析。版本过低的 ffmpeg 也能分析，只是不能转码
 #[tauri::command]
 pub async fn import_media(app: AppHandle, paths: Vec<String>) -> CmdResult<ImportResult> {
     tauri::async_runtime::spawn_blocking(move || {
         let caps = current_caps(&app)?;
+        let lang = app.state::<AppState>().lang();
         if !matches!(caps.status, EnvStatus::Ready | EnvStatus::TooOld) || caps.ffprobe_path.is_empty() {
-            return Err("还没有可用的 ffprobe，请先在“环境与硬件”页解决 ffmpeg 的问题".to_string());
+            return Err(pick(
+                lang,
+                "还没有可用的 ffprobe，请先在“环境与硬件”页解决 ffmpeg 的问题",
+                "No usable ffprobe yet. Fix ffmpeg on the Environment page first",
+            )
+            .into());
         }
         let inputs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
         let emitter = app.clone();
-        Ok(import_paths(&inputs, Path::new(&caps.ffprobe_path), &SystemRunner, IMPORT_WORKERS, &move |p| {
+        let ffprobe = Path::new(&caps.ffprobe_path);
+        Ok(import_paths(&inputs, ffprobe, &SystemRunner, IMPORT_WORKERS, lang, &move |p| {
             let _ = emitter.emit(EVENT_IMPORT_PROGRESS, p);
         }))
     })

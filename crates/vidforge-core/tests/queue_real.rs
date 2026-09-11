@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use vidforge_core::config::Settings;
 use vidforge_core::ffmpeg::exec::{Runner, SystemRunner, args};
 use vidforge_core::ffmpeg::probe::probe_file;
+use vidforge_core::i18n::Lang;
 use vidforge_core::model::{
     Capabilities, EncoderId, EnvStatus, EventLevel, Job, JobProgressEvent, JobStatus, MediaInfo, QueueItem, QueueOp,
     QueueSnapshot, RateControl, Scenario, TranscodePlan,
@@ -56,6 +57,7 @@ impl Env {
             platform: vidforge_core::model::Platform::current(),
             app_dir: app.path().to_path_buf(),
             user_path: Some(bin.clone()),
+            lang: Lang::ZhCn,
         };
         let caps = vidforge_core::ffmpeg::capability::probe(&ctx, true, &|_| {});
         assert_eq!(caps.status, EnvStatus::Ready);
@@ -82,7 +84,13 @@ impl Env {
     }
 
     fn queue(&self, sink: Arc<Sink>) -> Queue {
-        Queue::start(QueueDeps { tools: Arc::new(SystemTools), clock: Arc::new(SystemClock), sink, store: None })
+        Queue::start(QueueDeps {
+            tools: Arc::new(SystemTools),
+            clock: Arc::new(SystemClock),
+            sink,
+            store: None,
+            lang: Lang::ZhCn,
+        })
     }
 
     fn leftovers(&self) -> Vec<String> {
@@ -362,4 +370,57 @@ fn long_job_keeps_bounded_state() {
         j.log.len()
     );
     assert!(j.events.len() < 10 && j.log.len() <= 500, "任务状态不应随时长增长");
+}
+
+#[test]
+fn hdr10_fidelity_report_passes_for_x265_qsv_and_svtav1() {
+    // 计划验收第 8 条：同一 HDR10 源分别用 libx265、hevc_qsv、libsvtav1 输出，报告都判定 HDR10 已保留。
+    // AV1 的母版亮度定点分母与 HEVC 不同（256 对 10000），按数值比较才不会误报
+    let e = env_or_skip!();
+    let src = e.synth(
+        "hdr10.mkv",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=640x360:r=24:d=2",
+            "-pix_fmt",
+            "yuv420p10le",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            "log-level=error:hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:\
+master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400",
+        ],
+    );
+    let caps = e.caps.clone();
+    let mut encoders = vec![EncoderId::Libx265, EncoderId::Libsvtav1];
+    if caps.encoder_usable(EncoderId::HevcQsv) {
+        encoders.push(EncoderId::HevcQsv);
+    }
+    let items: Vec<QueueItem> = encoders
+        .iter()
+        .map(|&enc| {
+            let mut plan = switch_encoder(fast(&src, Scenario::Archive, &caps), enc, &src, &caps);
+            plan.video.preset = fast(&src, Scenario::Archive, &caps).video.preset;
+            if enc == EncoderId::Libsvtav1 {
+                plan.video.preset = "12".into();
+            }
+            plan.video.bit_depth = 10;
+            plan.fidelity.hdr10 = true;
+            QueueItem { media: src.clone(), plan }
+        })
+        .collect();
+    let q = e.queue(Arc::new(Sink::default()));
+    q.set_environment(caps, e.settings());
+    let ids = q.add(items);
+    assert!(q.wait_idle(Duration::from_secs(180)));
+    for (id, enc) in ids.iter().zip(&encoders) {
+        let j = job(&q, id);
+        assert_eq!(j.status, JobStatus::Done, "{enc:?}：{:#?}", j.events);
+        let report = j.report.unwrap();
+        let hdr = report.iter().find(|r| r.label == "HDR10").unwrap_or_else(|| panic!("{enc:?} 报告里没有 HDR10 项"));
+        assert!(hdr.ok, "{enc:?}：{hdr:?}");
+        assert!(report.iter().all(|r| r.ok), "{enc:?}：{report:#?}");
+    }
 }

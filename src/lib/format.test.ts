@@ -158,6 +158,8 @@ describe("splitArgs", () => {
 describe("formatTimeRange", () => {
   it("同单位合并", () => {
     expect(formatTimeRange(20, 45)).toBe("20–45 秒");
+    // 两端取整后相同就只写一个数，不写"1–1 秒"
+    expect(formatTimeRange(0.4, 1.2)).toBe("1 秒");
     expect(formatTimeRange(240, 480)).toBe("4–8 分钟");
     expect(formatTimeRange(36_400, 68_000)).toBe("10.1–18.9 小时");
   });

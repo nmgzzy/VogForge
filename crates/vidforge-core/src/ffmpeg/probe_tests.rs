@@ -12,7 +12,7 @@ fn fixture(name: &str) -> ProbeOutputs {
 }
 
 fn media(name: &str, path: &str) -> MediaInfo {
-    parse_media(path, None, &fixture(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
+    parse_media(path, None, &fixture(name)).unwrap_or_else(|e| panic!("{name}: {e:?}"))
 }
 
 #[test]
@@ -70,6 +70,7 @@ fn iphone_dolby_vision_84() {
     let v = &m.video[0];
     let dv = v.dolby_vision.as_ref().expect("应读出杜比视界配置");
     assert_eq!((dv.profile, dv.bl_compat_id, dv.has_enhancement_layer), (8, 4, false));
+    assert!(dv.rpu, "首帧带 RPU");
     assert_eq!(dv.el_type, None);
     assert!(v.is_vfr, "r_frame_rate 30 与平均 29.41 相差约 2%，判据 1 命中");
     assert_eq!(v.frame_count, Some(3959));
@@ -216,8 +217,7 @@ fn audio_only_files_are_rejected_even_with_cover_art() {
             .into(),
         ..Default::default()
     };
-    let err = parse_media("song.m4a", None, &outs).unwrap_err();
-    assert!(err.contains("只有音频"), "{err}");
+    assert_eq!(parse_media("song.m4a", None, &outs).unwrap_err(), Unusable::AudioOnly);
 }
 
 /// 封面图排在真实视频流前面
@@ -256,7 +256,11 @@ fn frame_and_packet_sampling_select_the_real_video_stream() {
 #[test]
 fn no_streams_is_an_error() {
     let outs = ProbeOutputs { info_json: r#"{"streams":[],"format":{}}"#.into(), ..Default::default() };
-    assert_eq!(parse_media("x.txt", None, &outs).unwrap_err(), "文件里没有音视频流");
+    assert_eq!(parse_media("x.txt", None, &outs).unwrap_err(), Unusable::NoStreams);
+    assert_eq!(parse_frame_count("300\n"), Some(300));
+    assert_eq!(parse_frame_count("300,\r\n"), Some(300), "某些构建在末尾多一个逗号");
+    assert_eq!(parse_frame_count("N/A"), None);
+    assert_eq!(Unusable::NoStreams.text(crate::i18n::Lang::En), "The file has no audio or video streams");
 }
 
 #[test]
@@ -312,6 +316,9 @@ fn probe_file_reports_broken_files() {
         calls: Mutex::new(Vec::new()),
     };
     let err = probe_file(Path::new("ffprobe"), Path::new("broken.mp4"), &fake).unwrap_err();
-    assert!(err.contains("文件不完整或已损坏"));
+    assert!(err.to_string().contains("文件不完整或已损坏"));
+    let (reason, raw) = err.describe(crate::i18n::Lang::En);
+    assert!(reason.starts_with("The file is incomplete or damaged"), "{reason}");
+    assert_eq!(raw.as_deref(), Some("[mov,mp4 @ 0x1] moov atom not found"));
     assert_eq!(fake.calls.lock().unwrap().len(), 1, "第一步失败就不再继续");
 }

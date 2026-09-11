@@ -3,6 +3,7 @@
  * queue://progress），界面与 store 不感知差别。调度规则照搬后端：软编占 CPU 票、硬编占 GPU 票、
  * 原样封装占 IO 票，暂停的任务仍占票，全部暂停时进行中的挂起、排队的不开始。
  */
+import { tr } from "@/i18n";
 import type { Job, JobEvent, JobProgressEvent, QueueItem, QueueOp, QueueSnapshot, Settings } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
 import { isHardware } from "@/lib/encoders";
@@ -80,38 +81,46 @@ export class MockQueue {
     const jobs = this.list;
     const find = (id: string) => {
       const j = jobs.find((x) => x.id === id);
-      if (!j) throw new Error(`没有这个任务：${id}`);
+      if (!j) throw new Error(tr(`没有这个任务：${id}`, `No such job: ${id}`));
       return j;
     };
     switch (op.kind) {
       case "pause": {
         const j = find(op.id);
-        if (j.status !== "running") throw new Error("只有进行中的任务可以暂停");
+        if (j.status !== "running") throw new Error(tr("只有进行中的任务可以暂停", "Only running jobs can be paused"));
         j.status = "paused";
-        j.events.push(event("info", "已暂停"));
+        j.events.push(event("info", tr("已暂停", "Paused")));
         break;
       }
       case "resume": {
         const j = find(op.id);
-        if (j.status !== "paused") throw new Error("只有已暂停的任务可以继续");
+        if (j.status !== "paused") throw new Error(tr("只有已暂停的任务可以继续", "Only paused jobs can be resumed"));
         j.status = "running";
         this.held.delete(j.id);
-        j.events.push(event("info", "已继续"));
+        j.events.push(event("info", tr("已继续", "Resumed")));
         break;
       }
       case "cancel": {
         const j = find(op.id);
-        if (finished(j)) throw new Error("任务已经结束");
+        if (finished(j)) throw new Error(tr("任务已经结束", "The job has already finished"));
         const wasActive = active(j);
         j.status = "cancelled";
         j.finishedAt = Date.now();
         j.progress.etaSec = undefined;
-        j.events.push(event("info", wasActive ? "已取消，临时文件已删除，目标目录无残留" : "已取消"));
+        const msg = wasActive
+          ? tr(
+              "已取消，临时文件已删除，目标目录无残留",
+              "Cancelled; the temporary file was deleted and nothing was left in the output folder",
+            )
+          : tr("已取消", "Cancelled");
+        j.events.push(event("info", msg));
         break;
       }
       case "retry": {
         const j = find(op.id);
-        if (!finished(j) || j.status === "done") throw new Error("只有失败、取消或跳过的任务可以重试");
+        if (!finished(j) || j.status === "done") {
+          throw new Error(tr("只有失败、取消或跳过的任务可以重试", "Only failed, cancelled or skipped jobs can be retried"));
+        }
         Object.assign(j, {
           status: "queued",
           progress: { percent: 0, outTimeSec: 0, speed: 0, fps: 0, sizeBytes: 0, dupFrames: 0, dropFrames: 0 },
@@ -119,11 +128,11 @@ export class MockQueue {
           finishedAt: undefined,
           outputSize: undefined,
         } satisfies Partial<Job>);
-        j.events.push(event("info", "重新加入队列"));
+        j.events.push(event("info", tr("重新加入队列", "Queued again")));
         break;
       }
       case "remove": {
-        if (active(find(op.id))) throw new Error("进行中的任务要先取消");
+        if (active(find(op.id))) throw new Error(tr("进行中的任务要先取消", "Cancel the running job first"));
         this.jobs = jobs.filter((j) => j.id !== op.id);
         break;
       }
@@ -179,10 +188,17 @@ export class MockQueue {
         j.report = buildReport(j);
         const bad = j.report.filter((r) => !r.ok);
         const sizes = `${formatBytes(j.media.sizeBytes)} → ${formatBytes(size)}`;
+        const list = bad.map((r) => r.label).join(tr("、", ", "));
         j.events.push(
           bad.length
-            ? event("warn", `已完成（${sizes}），但 ${bad.length} 项与预期不符：${bad.map((r) => r.label).join("、")}`)
-            : event("info", `完成，校验通过：${sizes}`),
+            ? event(
+                "warn",
+                tr(
+                  `已完成（${sizes}），但 ${bad.length} 项与预期不符：${list}`,
+                  `Done (${sizes}), but ${bad.length} item(s) differ from what was expected: ${list}`,
+                ),
+              )
+            : event("info", tr(`完成，校验通过：${sizes}`, `Done, all checks passed: ${sizes}`)),
         );
         continue;
       }
@@ -213,8 +229,14 @@ export class MockQueue {
       j.status = "running";
       j.startedAt ??= Date.now();
       j.attempts += 1;
-      if (isHardware(j.encoderUsed)) j.events.push(event("info", `预检通过：${j.encoderUsed} 以当前参数试编码 3 帧成功`));
-      j.events.push(event("info", j.firstPass ? "开始两遍编码" : "开始转码"));
+      if (isHardware(j.encoderUsed)) {
+        const msg = tr(
+          `预检通过：${j.encoderUsed} 以当前参数试编码 3 帧成功`,
+          `Pre-check passed: ${j.encoderUsed} encoded 3 test frames with these settings`,
+        );
+        j.events.push(event("info", msg));
+      }
+      j.events.push(event("info", j.firstPass ? tr("开始两遍编码", "Two-pass encoding started") : tr("开始转码", "Transcoding started")));
     }
     if (changed) this.publish();
   }

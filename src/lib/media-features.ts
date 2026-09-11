@@ -1,3 +1,4 @@
+import { tr } from "@/i18n";
 import type { MediaInfo } from "./types";
 
 export type FeatureTone = "hdr" | "dv" | "atmos" | "lossless" | "vfr" | "neutral";
@@ -28,50 +29,66 @@ export function mediaFeatures(m: MediaInfo): Feature[] {
     const p = dv.profile === 8 ? `8.${dv.blCompatId}` : String(dv.profile);
     out.push({
       key: "dv",
-      label: `杜比视界 ${p}${dv.hasEnhancementLayer ? ` ${dv.elType ?? "双层"}` : ""}`,
+      label: `${tr("杜比视界", "Dolby Vision")} ${p}${dv.hasEnhancementLayer ? ` ${dv.elType ?? tr("双层", "dual layer")}` : ""}`,
       tone: "dv",
       title: dv.hasEnhancementLayer
-        ? `Profile ${dv.profile} 双层（${dv.elType ?? "EL"}），重编码无法保留增强层`
-        : `Profile ${p} 单层，可在 CPU 编码时保留`,
+        ? tr(
+            `Profile ${dv.profile} 双层（${dv.elType ?? "EL"}），重编码无法保留增强层`,
+            `Dual-layer Profile ${dv.profile} (${dv.elType ?? "EL"}); re-encoding cannot keep the enhancement layer`,
+          )
+        : tr(`Profile ${p} 单层，可在 CPU 编码时保留`, `Single-layer Profile ${p}; kept when encoding on the CPU`),
     });
   }
   if (v?.color.hdrKind === "hdr10") {
     const nits = v.hdr10?.maxLuminance;
-    out.push({ key: "hdr10", label: "HDR10", tone: "hdr", title: nits ? `母版峰值 ${nits} nits` : "HDR10" });
+    const title = nits ? tr(`母版峰值 ${nits} nits`, `Mastering peak ${nits} nits`) : "HDR10";
+    out.push({ key: "hdr10", label: "HDR10", tone: "hdr", title });
   } else if (v?.color.hdrKind === "hlg") {
-    out.push({ key: "hlg", label: "HLG", tone: "hdr", title: "混合对数伽马 HDR" });
+    out.push({ key: "hlg", label: "HLG", tone: "hdr", title: tr("混合对数伽马 HDR", "Hybrid Log-Gamma HDR") });
   } else if (v?.color.hdrKind === "pq_no_meta") {
-    out.push({ key: "pq", label: "PQ", tone: "hdr", title: "标记为 PQ 但缺少 HDR10 元数据" });
+    const title = tr("标记为 PQ 但缺少 HDR10 元数据", "Tagged as PQ but missing HDR10 metadata");
+    out.push({ key: "pq", label: "PQ", tone: "hdr", title });
   }
-  if (v?.hdr10plus) out.push({ key: "hdr10plus", label: "HDR10+", tone: "hdr", title: "含 HDR10+ 动态元数据" });
+  if (v?.hdr10plus) {
+    out.push({ key: "hdr10plus", label: "HDR10+", tone: "hdr", title: tr("含 HDR10+ 动态元数据", "Has HDR10+ dynamic metadata") });
+  }
 
   const atmos = m.audio.find((a) => a.atmos);
-  if (atmos) out.push({ key: "atmos", label: "全景声", tone: "atmos", title: atmos.title ?? "Dolby Atmos" });
+  if (atmos) out.push({ key: "atmos", label: tr("全景声", "Atmos"), tone: "atmos", title: atmos.title ?? "Dolby Atmos" });
 
   const lossless = m.audio.find((a) => a.lossless && !a.atmos);
   const losslessAny = m.audio.find((a) => a.lossless);
   if (lossless || (losslessAny && !atmos)) {
     const a = (lossless ?? losslessAny)!;
-    out.push({ key: "lossless", label: LOSSLESS_NAME[a.codec] ?? "无损", tone: "lossless", title: "无损音轨" });
+    const label = LOSSLESS_NAME[a.codec] ?? tr("无损", "Lossless");
+    out.push({ key: "lossless", label, tone: "lossless", title: tr("无损音轨", "Lossless audio") });
   } else if (atmos?.lossless) {
-    out.push({ key: "lossless", label: LOSSLESS_NAME[atmos.codec] ?? "无损", tone: "lossless", title: "无损音轨" });
+    const label = LOSSLESS_NAME[atmos.codec] ?? tr("无损", "Lossless");
+    out.push({ key: "lossless", label, tone: "lossless", title: tr("无损音轨", "Lossless audio") });
   }
 
   if (v?.isVfr) {
     out.push({
       key: "vfr",
-      label: "可变帧率",
+      label: tr("可变帧率", "VFR"),
       tone: "vfr",
-      title: `平均 ${v.fpsAvg.toFixed(2)} fps，名义 ${v.fpsNominal} fps。导入剪辑软件前建议转为固定帧率`,
+      title: tr(
+        `平均 ${v.fpsAvg.toFixed(2)} fps，名义 ${v.fpsNominal} fps。导入剪辑软件前建议转为固定帧率`,
+        `Average ${v.fpsAvg.toFixed(2)} fps, nominal ${v.fpsNominal} fps. Convert to constant frame rate before editing`,
+      ),
     });
   }
   if (v && v.bitDepth >= 10 && v.color.hdrKind === "none") {
-    out.push({ key: "10bit", label: `${v.bitDepth}bit`, tone: "neutral", title: `${v.bitDepth}bit 色深` });
+    out.push({ key: "10bit", label: `${v.bitDepth}bit`, tone: "neutral", title: tr(`${v.bitDepth}bit 色深`, `${v.bitDepth}-bit color`) });
   }
   const pgs = m.subtitle.filter((s) => s.imageBased).length;
-  if (pgs) out.push({ key: "pgs", label: `PGS ×${pgs}`, tone: "neutral", title: "蓝光图形字幕，MP4 无法容纳" });
+  if (pgs) {
+    const title = tr("蓝光图形字幕，MP4 无法容纳", "Blu-ray image subtitles, which MP4 cannot hold");
+    out.push({ key: "pgs", label: `PGS ×${pgs}`, tone: "neutral", title });
+  }
   if (m.audio.length > 1) {
-    out.push({ key: "tracks", label: `${m.audio.length} 音轨`, tone: "neutral", title: "多条音轨" });
+    const label = tr(`${m.audio.length} 音轨`, `${m.audio.length} tracks`);
+    out.push({ key: "tracks", label, tone: "neutral", title: tr("多条音轨", "Multiple audio tracks") });
   }
   return out;
 }

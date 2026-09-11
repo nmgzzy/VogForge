@@ -11,6 +11,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use vidforge_core::i18n::Lang;
 use vidforge_core::model::{Capabilities, MediaInfo, Scenario, TranscodePlan};
 use vidforge_core::pipeline::args::build_arg_segments;
 use vidforge_core::pipeline::{apply_fix_to_plan, evaluate, recommend_plan};
@@ -101,7 +102,7 @@ fn engine_output_matches_the_golden_file() {
         let got = [
             ("plan", serde_json::to_value(&plan).unwrap()),
             ("segments", serde_json::to_value(build_arg_segments(&c.media, &plan, caps, out)).unwrap()),
-            ("result", serde_json::to_value(evaluate(&c.media, &plan, caps, out)).unwrap()),
+            ("result", serde_json::to_value(evaluate(&c.media, &plan, caps, out, Lang::ZhCn)).unwrap()),
         ];
         if update {
             let [(_, _), (_, segments), (_, result)] = got;

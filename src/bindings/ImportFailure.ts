@@ -5,6 +5,10 @@
  */
 export type ImportFailure = { path: string, 
 /**
- * 中文原因
+ * 给用户看的原因（按界面语言）
  */
-reason: string, };
+reason: string, 
+/**
+ * ffprobe 原文，界面上可展开查看
+ */
+detail?: string, };

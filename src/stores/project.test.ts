@@ -101,7 +101,11 @@ describe("导入文件（经 Backend 接口）", () => {
     const r = state().importReport!;
     expect(r.added).toBe(0);
     expect(r.duplicate).toBe(1);
-    expect(r.failures).toEqual([{ path: "D:/clips/broken.mp4", reason: "文件不完整或已损坏（moov atom not found）" }]);
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]!.path).toBe("D:/clips/broken.mp4");
+    // 原因是说明加动作，ffprobe 原文单独放在 detail 里供展开
+    expect(r.failures[0]!.reason).toMatch(/^文件不完整或已损坏。/);
+    expect(r.failures[0]!.detail).toBe("[mov,mp4 @ 0x1] moov atom not found");
     state().dismissImportReport();
     expect(state().importReport).toBeUndefined();
   });

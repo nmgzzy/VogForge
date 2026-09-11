@@ -1,17 +1,18 @@
 import { Bookmark, Clapperboard, Cpu, ListVideo, Monitor, Moon, Settings, Sun, type LucideIcon } from "lucide-react";
 import { backend } from "@/backend";
+import { tr } from "@/i18n";
 import { cn } from "@/lib/cn";
 import type { EnvStatus } from "@/lib/types";
 import { useCapabilities } from "@/stores/capability";
 import { useQueue } from "@/stores/queue";
 import { useUi, type ThemePref, type View } from "@/stores/ui";
 
-const NAV: { id: View; label: string; icon: LucideIcon }[] = [
-  { id: "transcode", label: "转码", icon: Clapperboard },
-  { id: "queue", label: "任务队列", icon: ListVideo },
-  { id: "environment", label: "环境与硬件", icon: Cpu },
-  { id: "presets", label: "预设", icon: Bookmark },
-  { id: "settings", label: "设置", icon: Settings },
+const nav = (): { id: View; label: string; icon: LucideIcon }[] => [
+  { id: "transcode", label: tr("转码", "Transcode"), icon: Clapperboard },
+  { id: "queue", label: tr("任务队列", "Queue"), icon: ListVideo },
+  { id: "environment", label: tr("环境与硬件", "Environment"), icon: Cpu },
+  { id: "presets", label: tr("预设", "Presets"), icon: Bookmark },
+  { id: "settings", label: tr("设置", "Settings"), icon: Settings },
 ];
 
 export function LogoMark({ className }: { className?: string }) {
@@ -30,23 +31,47 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
+interface StatusLook {
+  label: string;
+  dot: string;
+  pulse: boolean;
+  hint: string;
+}
+
 /** 侧栏底部的环境状态：正常时安静的绿点，出问题才醒目 */
-export const ENV_STATUS: Record<EnvStatus, { label: string; dot: string; pulse: boolean; hint: string }> = {
-  ready: { label: "环境就绪", dot: "bg-ok", pulse: true, hint: "" },
-  probing: { label: "正在探测环境…", dot: "bg-accent", pulse: true, hint: "探测完成前先按 CPU 软编给方案" },
-  missing: { label: "未找到 ffmpeg", dot: "bg-danger", pulse: false, hint: "点此查看如何安装" },
-  too_old: { label: "ffmpeg 版本过低", dot: "bg-warn", pulse: false, hint: "需要 7.1 或更高版本" },
-  broken: { label: "ffmpeg 无法运行", dot: "bg-danger", pulse: false, hint: "点此查看原因" },
-};
+export function envStatus(status: EnvStatus): StatusLook {
+  switch (status) {
+    case "ready":
+      return { label: tr("环境就绪", "Ready"), dot: "bg-ok", pulse: true, hint: "" };
+    case "probing":
+      return {
+        label: tr("正在探测环境…", "Checking environment…"),
+        dot: "bg-accent",
+        pulse: true,
+        hint: tr("探测完成前先按 CPU 软编给方案", "Plans assume CPU encoding until the check finishes"),
+      };
+    case "missing":
+      return { label: tr("未找到 ffmpeg", "ffmpeg not found"), dot: "bg-danger", pulse: false, hint: tr("点此查看如何安装", "Click to see how to install it") };
+    case "too_old":
+      return { label: tr("ffmpeg 版本过低", "ffmpeg too old"), dot: "bg-warn", pulse: false, hint: tr("需要 7.1 或更高版本", "Version 7.1 or newer is required") };
+    case "broken":
+      return { label: tr("ffmpeg 无法运行", "ffmpeg cannot run"), dot: "bg-danger", pulse: false, hint: tr("点此查看原因", "Click to see why") };
+  }
+}
 
 /** 调用后端本身失败（不是没找到 ffmpeg） */
-export const ENV_ERROR = { label: "环境探测失败", dot: "bg-danger", pulse: false, hint: "点此查看原因并重试" };
+export const envError = (): StatusLook => ({
+  label: tr("环境探测失败", "Environment check failed"),
+  dot: "bg-danger",
+  pulse: false,
+  hint: tr("点此查看原因并重试", "Click to see why and retry"),
+});
 
-const THEME_CYCLE: Record<ThemePref, { next: ThemePref; icon: LucideIcon; label: string }> = {
-  system: { next: "light", icon: Monitor, label: "跟随系统" },
-  light: { next: "dark", icon: Sun, label: "浅色" },
-  dark: { next: "system", icon: Moon, label: "深色" },
-};
+const themeCycle = (): Record<ThemePref, { next: ThemePref; icon: LucideIcon; label: string }> => ({
+  system: { next: "light", icon: Monitor, label: tr("跟随系统", "System") },
+  light: { next: "dark", icon: Sun, label: tr("浅色", "Light") },
+  dark: { next: "system", icon: Moon, label: tr("深色", "Dark") },
+});
 
 export function Sidebar() {
   const view = useUi((s) => s.view);
@@ -62,12 +87,8 @@ export function Sidebar() {
   const hw = caps.encoders.filter((e) => e.vendor !== "software" && e.usable);
   const hwVendors = [...new Set(hw.map((e) => e.vendor))];
   const vendorName = { intel: "Intel QSV", nvidia: "NVENC", amd: "AMF", apple: "VideoToolbox", software: "" };
-  const t = THEME_CYCLE[theme];
-  const status = error
-    ? ENV_ERROR
-    : probing && caps.status !== "ready"
-      ? ENV_STATUS.probing
-      : ENV_STATUS[caps.status];
+  const t = themeCycle()[theme];
+  const status = error ? envError() : probing && caps.status !== "ready" ? envStatus("probing") : envStatus(caps.status);
 
   return (
     <aside className="flex w-[196px] shrink-0 flex-col border-r border-line bg-sunken">
@@ -75,12 +96,12 @@ export function Sidebar() {
         <LogoMark className="size-7" />
         <div className="leading-tight">
           <div className="text-[14px] font-semibold tracking-tight">VidForge</div>
-          <div className="text-[10.5px] text-subtle">{backend.kind === "mock" ? "v0.1 · 浏览器预览" : "v0.1"}</div>
+          <div className="text-[10.5px] text-subtle">{backend.kind === "mock" ? tr("v0.1 · 浏览器预览", "v0.1 · browser preview") : "v0.1"}</div>
         </div>
       </div>
 
       <nav className="flex flex-col gap-0.5 px-2 pt-2">
-        {NAV.map((n) => {
+        {nav().map((n) => {
           const on = view === n.id;
           return (
             <button
@@ -124,19 +145,20 @@ export function Sidebar() {
           <div className="mt-0.5 text-[11px] text-muted">
             {caps.status === "ready" && !error
               ? hwVendors.length
-                ? `GPU：${hwVendors.map((v) => vendorName[v]).join("、")}`
-                : "仅 CPU 软编"
+                ? `GPU${tr("：", ": ")}${hwVendors.map((v) => vendorName[v]).join(tr("、", ", "))}`
+                : tr("仅 CPU 软编", "CPU encoding only")
               : status.hint}
           </div>
         </button>
 
         <button
           onClick={() => setTheme(t.next)}
-          title={`主题：${t.label}（点击切换）`}
+          title={tr(`主题：${t.label}（点击切换）`, `Theme: ${t.label} (click to switch)`)}
           className="flex h-8 items-center gap-2 rounded-md px-2.5 text-xs text-muted transition-colors hover:bg-raised hover:text-fg"
         >
           <t.icon className="size-3.5" />
-          主题：{t.label}
+          {tr("主题：", "Theme: ")}
+          {t.label}
         </button>
       </div>
     </aside>

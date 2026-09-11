@@ -3,7 +3,7 @@ source: crates/vidforge-core/tests/args_facts.rs
 expression: text
 ---
 全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
-输入   -hwaccel auto -i D:\素材\航拍\DJI_20260812_0142.MP4
+输入   -hwaccel d3d11va -i D:\素材\航拍\DJI_20260812_0142.MP4
 映射   -map 0:0 -map_metadata 0
 视频   -c:v hevc_nvenc -pix_fmt p010le -profile:v main10 -preset medium -tune hq -rc vbr -b:v 0 -cq 20 -g 60
 封装   -f matroska

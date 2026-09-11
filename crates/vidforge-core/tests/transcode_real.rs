@@ -10,8 +10,8 @@ use vidforge_core::ffmpeg::exec::{Runner, SystemRunner, args};
 use vidforge_core::ffmpeg::probe::{probe_file, pts_is_vfr};
 use vidforge_core::model::{
     AudioCodec, AudioMode, AudioTrackPlan, Capabilities, Container, DoviAction, EncoderId, EnvStatus, FidelityRequest,
-    FpsPolicy, HdrAction, HdrKind, MediaInfo, QualityTier, RateControl, ResolutionPreset, Scenario, StreamAction,
-    SubtitleMode, ToneMapPipeline, TrackRole, TranscodePlan, VideoPlan,
+    FpsPolicy, HdrAction, HdrKind, MediaInfo, Platform, QualityTier, RateControl, ResolutionPreset, Scenario,
+    StreamAction, SubtitleMode, ToneMapPipeline, TrackRole, TranscodePlan, VideoPlan,
 };
 use vidforge_core::pipeline::args::{build_arg_segments, build_first_pass, flatten};
 
@@ -42,6 +42,7 @@ impl Env {
             platform: vidforge_core::model::Platform::current(),
             app_dir: app.path().to_path_buf(),
             user_path: Some(bin.clone()),
+            lang: vidforge_core::i18n::Lang::ZhCn,
         };
         let caps = vidforge_core::ffmpeg::capability::probe(&ctx, true, &|_| {});
         assert_eq!(caps.status, EnvStatus::Ready);
@@ -62,6 +63,15 @@ impl Env {
     fn probe(&self, p: &Path) -> MediaInfo {
         probe_file(&self.bin.join(exe_name("ffprobe")), p, &SystemRunner)
             .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    }
+
+    /// 这台机器上命令里应当出现的硬解方式（技术事实文档 7.5）
+    fn hwaccel(&self) -> &'static str {
+        if self.caps.platform == Platform::Windows && self.caps.device_available("d3d11va") {
+            "d3d11va"
+        } else {
+            "auto"
+        }
     }
 
     /// 生成命令并真正执行，返回输出文件的分析结果与执行时的完整参数
@@ -242,7 +252,7 @@ fn qsv_keeps_hdr10_and_mp4_gets_hvc1() {
     let mut plan = base_plan(EncoderId::HevcQsv, Container::Mp4);
     plan.video.bit_depth = 10;
     let (out, a) = e.transcode(&src, &plan, "qsv.mp4");
-    assert!(a.windows(2).any(|w| w == ["-hwaccel", "auto"]), "硬解用 -hwaccel auto");
+    assert!(a.windows(2).any(|w| w == ["-hwaccel", e.hwaccel()]), "{a:?}");
     assert_hdr10_1000(&out, "hevc_qsv");
     assert_eq!(e.ffprobe_field(&e.path("qsv.mp4"), "v:0", "stream=codec_tag_string"), "hvc1");
 }
@@ -421,7 +431,7 @@ fn downmix_to_stereo_uses_pan_and_yields_two_channels() {
 
 #[test]
 fn hardware_decode_keeps_hdr10_side_data() {
-    // 硬解（-hwaccel auto，帧自动下载到内存）后用 QSV 编码，HDR10 帧级元数据是否还在：决定硬解能否用于保留 HDR 的任务
+    // 硬解（帧自动下载到内存）后编码，HDR10 帧级元数据是否还在：决定硬解能否用于保留 HDR 的任务
     let e = env_or_skip!();
     if !e.caps.device_available("qsv") {
         eprintln!("跳过：没有 QSV 设备");
@@ -432,8 +442,8 @@ fn hardware_decode_keeps_hdr10_side_data() {
     let mut plan = base_plan(EncoderId::Libx265, Container::Mkv);
     plan.video.bit_depth = 10;
     let (out, a) = e.transcode(&src, &plan, "hwdec.mkv");
-    assert!(a.windows(2).any(|w| w == ["-hwaccel", "auto"]), "硬解用 -hwaccel auto");
-    assert_hdr10_1000(&out, "-hwaccel auto 解码后 libx265 编码");
+    assert!(a.windows(2).any(|w| w == ["-hwaccel", e.hwaccel()]), "{a:?}");
+    assert_hdr10_1000(&out, "硬解后 libx265 编码");
 }
 
 #[test]

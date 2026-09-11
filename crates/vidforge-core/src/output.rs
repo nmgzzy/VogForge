@@ -5,22 +5,23 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::Settings;
+use crate::i18n::{Lang, pick};
 use crate::model::{MediaInfo, Scenario, StreamAction, TranscodePlan};
 use crate::pipeline::args::{display_size, target_dimensions};
 
 /// 默认输出目录名：源文件旁边的 VidForge 文件夹
 pub const DEFAULT_DIR_NAME: &str = "VidForge";
 
-fn scenario_word(s: Scenario) -> &'static str {
+fn scenario_word(s: Scenario, lang: Lang) -> &'static str {
     match s {
-        Scenario::Archive => "归档",
-        Scenario::Collection => "收藏",
-        Scenario::Streaming => "流媒体",
-        Scenario::Mobile => "手机",
-        Scenario::Social => "社交",
-        Scenario::Smallest => "最小",
-        Scenario::Editing => "剪辑",
-        Scenario::Remux => "封装",
+        Scenario::Archive => pick(lang, "归档", "archive"),
+        Scenario::Collection => pick(lang, "收藏", "collection"),
+        Scenario::Streaming => pick(lang, "流媒体", "streaming"),
+        Scenario::Mobile => pick(lang, "手机", "mobile"),
+        Scenario::Social => pick(lang, "社交", "social"),
+        Scenario::Smallest => pick(lang, "最小", "smallest"),
+        Scenario::Editing => pick(lang, "剪辑", "editing"),
+        Scenario::Remux => pick(lang, "封装", "remux"),
     }
 }
 
@@ -52,8 +53,9 @@ pub fn sanitize(name: &str) -> String {
     if trimmed.is_empty() { "output".to_string() } else { trimmed.to_string() }
 }
 
-/// 展开命名模板：`{name}` `{height}` `{codec}` `{scenario}` `{date}`。原样封装时 `{codec}` 是 `remux`
-pub fn render_template(template: &str, media: &MediaInfo, plan: &TranscodePlan, date: &str) -> String {
+/// 展开命名模板：`{name}` `{height}` `{codec}` `{scenario}` `{date}`。原样封装时 `{codec}` 是 `remux`；
+/// `{scenario}` 按界面语言取词
+pub fn render_template(template: &str, media: &MediaInfo, plan: &TranscodePlan, date: &str, lang: Lang) -> String {
     let stem = Path::new(&media.name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let codec = if plan.video.action == StreamAction::Copy {
         "remux".to_string()
@@ -64,7 +66,7 @@ pub fn render_template(template: &str, media: &MediaInfo, plan: &TranscodePlan, 
         .replace("{name}", &stem)
         .replace("{height}", &output_height(media, plan).to_string())
         .replace("{codec}", &codec)
-        .replace("{scenario}", scenario_word(plan.scenario))
+        .replace("{scenario}", scenario_word(plan.scenario, lang))
         .replace("{date}", date);
     sanitize(&rendered)
 }
@@ -128,7 +130,11 @@ pub fn output_dir(media: &MediaInfo, settings: &Settings) -> String {
 
 /// 期望的最终输出路径
 pub fn output_path(media: &MediaInfo, plan: &TranscodePlan, settings: &Settings, date: &str) -> PathBuf {
-    let file = format!("{}.{}", render_template(&settings.naming_template, media, plan, date), plan.container.ext());
+    let file = format!(
+        "{}.{}",
+        render_template(&settings.naming_template, media, plan, date, settings.language),
+        plan.container.ext()
+    );
     PathBuf::from(join(&output_dir(media, settings), &file))
 }
 
@@ -193,9 +199,16 @@ mod tests {
         let mut plan = recommend_plan(&m, Scenario::Mobile, &caps());
         let s =
             Settings { naming_template: "{date}-{scenario}-{name}-{height}p-{codec}".into(), ..Settings::default() };
-        assert_eq!(render_template(&s.naming_template, &m, &plan, "2026-09-11"), "2026-09-11-手机-IMG_1-1080p-h264");
+        assert_eq!(
+            render_template(&s.naming_template, &m, &plan, "2026-09-11", Lang::ZhCn),
+            "2026-09-11-手机-IMG_1-1080p-h264"
+        );
+        assert_eq!(
+            render_template(&s.naming_template, &m, &plan, "2026-09-11", Lang::En),
+            "2026-09-11-mobile-IMG_1-1080p-h264"
+        );
         plan.video.action = StreamAction::Copy;
-        assert_eq!(render_template("{name}_{codec}", &m, &plan, ""), "IMG_1_remux");
+        assert_eq!(render_template("{name}_{codec}", &m, &plan, "", Lang::ZhCn), "IMG_1_remux");
     }
 
     #[test]

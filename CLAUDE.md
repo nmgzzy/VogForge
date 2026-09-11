@@ -6,7 +6,7 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 
 ## 当前阶段
 
-阶段 0–6 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 决策引擎（`crates/vidforge-core/src/pipeline/`：场景推荐、保真度求解、命令构建、预估、码率控制、响度）、真实转码队列（`crates/vidforge-core/src/queue/`）都已接通。引擎编译成 WebAssembly 驱动界面，没有第二份 TS 实现。下一步是阶段 7：保真度报告、引导下载、i18n、打磨与 macOS。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
+阶段 0–7 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 决策引擎（`crates/vidforge-core/src/pipeline/`：场景推荐、保真度求解、命令构建、预估、码率控制、响度）、真实转码队列（`crates/vidforge-core/src/queue/`）、保真度报告（`verify.rs`）、中英文界面、报错说明、入门引导与下载指引都已接通。引擎编译成 WebAssembly 驱动界面，没有第二份 TS 实现。剩下 macOS 实机与杜比视界真实素材两项验证。阶段划分与验收记录见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
 
 **改引擎规则后的流程。** 先让 Rust 测试反映新规则：有意的产出变化用 `UPDATE_GOLDEN=1 cargo test -p vidforge-core --test golden_engine` 重写 `tests/fixtures/golden/engine.json`，`INSTA_UPDATE=always cargo test -p vidforge-core` 重写快照，逐个审阅 diff。然后 `pnpm wasm` 重新生成 `src/wasm/pkg/` 并一起提交；忘了这一步 `src/lib/engine.golden.test.ts` 会失败（它用 wasm 重算回归样本）。
 
@@ -55,6 +55,10 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 
 `PlanResult` 是派生数据，从不存储。`stores/project.ts` 只存 `files` 与按媒体 id 索引的 `plans`，所有修改走 `patchPlan`（内部 `structuredClone` 后调 `updatePlan`）；能力快照变化时 `App.tsx` 调 `refreshPlans` 重新整理全部计划。Zustand v5 里返回对象的 selector 必须包 `useShallow`，否则会无限重渲染。
 
+**界面语言。** 文字在产生的地方按语言生成，不维护键值表（设计文档 4.11）。Rust 用 `tr!(lang, "中文 {}", "English {}", 参数)` 与 `i18n::pick`，两种写法的参数都必须用到（`format!` 不允许多余参数）；前端用 `src/i18n` 的 `tr("中文", "English")`。App 在渲染时同步语言，语言一变整个界面按新 key 重新挂载，所以模块级常量里不能放文案，要写成函数（例如 `scenarios()`）。计划本身与语言无关：命令段用 `SegmentKind`，新生成的音轨标题写英文。能力缓存里存中文原文，`capability::localize` 在读取时换语言。英文下残留中文会被 `english.test.tsx` 与 `english_output_has_no_chinese_left` 抓住，新增文案时两种语言一起写。
+
+ffmpeg 报错不直接给用户看：`ffmpeg/errors.rs` 按规则表生成原因加动作，原文放进 `JobEvent.detail` / `ImportFailure.detail`，界面用 `RawDetail` 折叠显示。
+
 ## ffmpeg 行为的单一事实源
 
 `docs/ffmpeg-facts.md` 记录全部已核实的 ffmpeg 行为，每条标注来源（源码 / 文档 / 本机实测）。其中很多规则与直觉相反，例如 9.0 已移除 `-vsync`、`-dolbyvision` 默认 auto 必须显式传 0 或 1、转固定帧率不能用 fps 滤镜、不支持的 `-pix_fmt` 会被静默替换成 8bit。改参数生成或探测逻辑前先查这份文档，不要凭记忆；新验证的行为写进去并标 [实测]。
@@ -74,7 +78,9 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 - 停掉后台的 `pnpm tauri dev` 只会结束外层 shell，vite（占 1420）、`cargo run` 与 `vidforge.exe` 会留下来，要按进程号结束。WebView2 按应用共用数据目录，已有一个实例在跑时，第二个实例（例如另一个调试端口）拿不到调试端口。
 - 决策引擎的 wasm 需要 CSP `script-src 'wasm-unsafe-eval'`（`tauri.conf.json`）。开发模式不下发 CSP，只有嵌入资源的构建（`pnpm tauri build`）才会暴露这类问题。
 - 引擎代码（会编译成 wasm）里不要用 `std::path` 解析媒体路径：wasm 上它只认 `/`，`D:\素材\a.mov` 会变成没有父目录的文件名。用 `output.rs` 里按字符串处理、两种分隔符都认的函数。
-- 桌面端到端自测时队列写的是真实的 `~/.vidforge/queue.json`，测完用"清除已完成"（或 `queue_control` 的 `clear_finished`）把测试任务清掉。
+- 桌面端到端自测时队列写的是真实的 `~/.vidforge/queue.json`，测完用"清除已完成"（或 `queue_control` 的 `clear_finished`）把测试任务清掉；改过的设置（硬件编码、并发数、语言）也要改回来。
+- `tauri-cdp.mjs` 的 `size:960x640` 用视口模拟检查最小窗口；截图按系统缩放输出，125% 缩放下 960 宽的视口截出来是 1200 像素。
+- 前端取能力时带上当前语言（`getCapabilities(force, lang)`）。不要改回靠后端读设置：设置是乐观更新的，切换语言时后端可能还没收到新设置。
 - `-c:a opus` 是 ffmpeg 自带的实验性编码器，不加 `-strict -2` 直接失败；音频编码器名走 `AudioCodec::encoder()`（Opus → libopus），`name()` 是 ffprobe 报的格式名。
 - `wasm-bindgen` 依赖锁定为 `=0.2.128`，必须与本机 `wasm-bindgen-cli` 版本一致，否则 `pnpm wasm` 生成的胶水代码与 wasm 不匹配。
 - 复制命令用的 `quoteArg`（`src/lib/format.ts`）默认面向 PowerShell：逗号是数组运算符、行首 `@` 是 splatting，所以 `SAFE_ARG` 刻意不含这两个字符，不要放宽。
@@ -82,3 +88,4 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 - 布局按容器宽度响应（Tailwind v4 的 `@container` 与 `@min-[900px]:`），不是按视口宽度。
 - Windows 上启动子进程一律经过 `ffmpeg::exec::command`，它设置了 `CREATE_NO_WINDOW`，否则发布版每次调用 ffmpeg 都会闪一个控制台窗口。
 - 开发机的 ffmpeg 是 9.0.1 gyan full，位于 `C:\Program1\ffmpeg\bin`，只在注册表 PATH 里，从 Git Bash 启动的进程看不到，定位时靠注册表那一步找到。
+- Windows 上硬解写 `-hwaccel d3d11va`，不要改回 `auto`：auto 先试 DXVA2，远程桌面断开或无人值守时 D3D9 建不了设备，ffmpeg 直接崩溃（技术事实文档 7.5 节）。同样的状态下 `-init_hw_device qsv` 也会失败，`probe_real.rs` 的开发机基线核对要设 `VIDFORGE_SKIP_BASELINE` 才能过。

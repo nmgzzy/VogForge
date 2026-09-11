@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter};
 use vidforge_core::config::{self, Settings};
+use vidforge_core::i18n::Lang;
 use vidforge_core::model::{Capabilities, JobProgressEvent, QueueSnapshot};
 use vidforge_core::queue::process::SystemTools;
 use vidforge_core::queue::{EventSink, Queue, QueueDeps, SystemClock};
@@ -46,8 +47,14 @@ impl AppState {
             clock: Arc::new(SystemClock),
             sink: Arc::new(TauriSink(app)),
             store: Some(Queue::store_path(&app_dir)),
+            lang: settings.language,
         });
         AppState { app_dir, settings: Mutex::new(settings), caps: Mutex::new(None), probe_lock: Mutex::new(()), queue }
+    }
+
+    /// 当前界面语言
+    pub fn lang(&self) -> Lang {
+        self.settings.lock().map(|s| s.language).unwrap_or_default()
     }
 
     /// 探测结果或设置变化后同步给队列

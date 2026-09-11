@@ -2,6 +2,7 @@
 
 pub mod capability;
 pub mod classify;
+pub mod errors;
 pub mod exec;
 pub mod locate;
 pub mod parse;

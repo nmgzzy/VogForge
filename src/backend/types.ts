@@ -3,6 +3,7 @@ import type {
   ImportProgress,
   ImportResult,
   JobProgressEvent,
+  Lang,
   ProbeProgress,
   QueueItem,
   QueueOp,
@@ -24,8 +25,8 @@ export interface DropHandlers {
 export interface Backend {
   readonly kind: "tauri" | "mock";
 
-  /** 探测环境能力。force 为 false 时后端优先用缓存 */
-  getCapabilities(force: boolean): Promise<Capabilities>;
+  /** 探测环境能力。force 为 false 时后端优先用缓存；说明文字按 lang 生成（切换语言时不必等设置保存完） */
+  getCapabilities(force: boolean, lang: Lang): Promise<Capabilities>;
   /** 订阅探测进度，返回取消订阅函数 */
   onProbeProgress(cb: (p: ProbeProgress) => void): () => void;
 
@@ -48,6 +49,15 @@ export interface Backend {
   revealPath(path: string): Promise<void>;
   /** 需要用户明确同意的操作（例如改为覆盖同名文件）；返回是否同意 */
   confirm(message: string, title: string): Promise<boolean>;
+  /** 系统通知（需求 F-6.11） */
+  notify(title: string, body: string): Promise<void>;
+
+  /** 应用自己的 ffmpeg 目录（引导下载后放这里）；浏览器预览没有，返回 null */
+  ffmpegInstallDir(): Promise<string | null>;
+  /** 在文件管理器里打开这个目录 */
+  openFfmpegDir(): Promise<void>;
+  /** 把这些已完成任务的源文件移到回收站；后端只处理校验通过的任务，返回实际移走的文件 */
+  trashSources(jobIds: string[]): Promise<string[]>;
 
   /** 队列的完整状态；之后的变化通过 onQueueSnapshot / onQueueProgress 推送 */
   getQueue(): Promise<QueueSnapshot>;

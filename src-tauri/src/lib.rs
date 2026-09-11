@@ -25,6 +25,9 @@ pub fn run() {
             commands::queue_snapshot,
             commands::queue_add,
             commands::queue_control,
+            commands::ffmpeg_install_dir,
+            commands::open_ffmpeg_dir,
+            commands::trash_sources,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

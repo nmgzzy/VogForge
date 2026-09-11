@@ -8,7 +8,8 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use vidforge_core::config::Settings;
+use vidforge_core::config::{Lang, Settings};
+use vidforge_core::ffmpeg::capability::localize;
 use vidforge_core::model::{Capabilities, MediaInfo, Scenario, TranscodePlan};
 use vidforge_core::{output, pipeline};
 use wasm_bindgen::prelude::*;
@@ -58,7 +59,7 @@ pub fn evaluate(media: &str, plan: &str, caps: &str, settings: &str, date: &str)
     let (m, p, c, s): (MediaInfo, TranscodePlan, Capabilities, Settings) =
         (parse("媒体信息", media)?, parse("计划", plan)?, parse("环境能力", caps)?, parse("设置", settings)?);
     let out = output::output_path(&m, &p, &s, date);
-    json(&pipeline::evaluate(&m, &p, &c, Path::new(&out)))
+    json(&pipeline::evaluate(&m, &p, &c, Path::new(&out), s.language))
 }
 
 /// 界面需要的静态规则表（质量刻度、preset、码率控制支持、标准帧率档）
@@ -74,9 +75,18 @@ pub fn video_hints(media: &str) -> Result<String, JsError> {
     json(&pipeline::meta::video_hints(&m))
 }
 
+/// 把能力里由结构化字段决定的说明换成指定语言。桌面端由后端直接按语言返回，浏览器预览的示例能力靠它切换
+#[wasm_bindgen]
+pub fn localize_caps(caps: &str, lang: &str) -> Result<String, JsError> {
+    let mut c: Capabilities = parse("环境能力", caps)?;
+    let l: Lang = parse("语言", &format!("\"{lang}\""))?;
+    localize(&mut c, l);
+    json(&c)
+}
+
 /// 决策引擎实际使用的能力：按设置关掉硬件编码 / 硬件解码（需求 F-5.6）
 #[wasm_bindgen]
 pub fn effective_caps(caps: &str, settings: &str) -> Result<String, JsError> {
     let (c, s): (Capabilities, Settings) = (parse("环境能力", caps)?, parse("设置", settings)?);
-    json(&c.restricted(s.hw_encode, s.hw_decode, &[]))
+    json(&c.restricted(s.hw_encode, s.hw_decode, &[], s.language))
 }

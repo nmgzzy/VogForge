@@ -3,7 +3,7 @@ source: crates/vidforge-core/tests/args_facts.rs
 expression: text
 ---
 全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
-输入   -hwaccel auto -i D:\素材\婚礼\C0087.MP4
+输入   -hwaccel d3d11va -i D:\素材\婚礼\C0087.MP4
 映射   -map 0:0 -map 0:1 -map_metadata 0
 视频   -c:v h264_qsv -pix_fmt nv12 -preset medium -global_quality 21
 滤镜   -vf libplacebo=w=1920:h=1080:downscaler=mitchell:tonemapping=bt.2390:peak_detect=1:gamut_mode=perceptual:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p

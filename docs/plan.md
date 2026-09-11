@@ -1,10 +1,10 @@
 # VidForge 实施计划
 
-版本 0.1 · 2026-09-11
+版本 0.1 · 2026-09-12
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [TODO](todo.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
-当前进度：阶段 0–6 已完成，达到里程碑 M5（批量可靠：真实队列并发执行、按失败分类回退、取消不留半成品、强杀后重启恢复）。逐项状态见 [TODO](todo.md)。
+当前进度：阶段 0–7 已完成，达到里程碑 M6（结果可信：每个任务都有逐项核对的保真度报告，验收标准除两项需要特定条件外均有证据，见文末验收记录）。剩下 macOS 实机验证与杜比视界真实素材两项，逐项状态见 [TODO](todo.md)。
 
 ## 总体策略
 
@@ -125,3 +125,20 @@ M3 刻意安排成跨阶段的最小路径：阶段 4 完成后，用手工构�
 | 无 NVIDIA / AMD 显卡 | 这两条编码路径只能靠错误分类的单元测试覆盖，无法端到端验证。错误判据已从真实报错采集 |
 | 杜比视界 P7 双层 | ffmpeg 无法保留，必须降级 8.1 且丢失 FEL 映射。界面必须如实说明，不能含糊承诺 |
 | Atmos 无法编码 | 只能流复制。界面必须明确，避免用户以为"尽量保留"意味着能重编码 |
+
+## 验收记录
+
+需求文档第 6 节的验收标准，阶段 7 结束时（2026-09-12，Windows 11 开发机，ffmpeg 9.0.1 gyan full）逐条核对：
+
+| # | 结论 | 依据 |
+|---|---|---|
+| 1 | 通过 | `capability.rs` 的 `missing_ffmpeg`、`present_but_unusable_ffmpeg_is_broken_not_missing`；环境页与入门引导在缺失时给出下载指引与应用的 ffmpeg 目录（`EnvironmentView.test.tsx`、`Onboarding.test.tsx`，桌面端截图核对）。"未预装"是模拟的缺失状态，没有在一台干净机器上跑 |
+| 2 | 通过（合成素材） | `transcode_real.rs` 的 HDR10 保留、`queue_real.rs` 的 `hdr10_fidelity_report_passes_for_x265_qsv_and_svtav1`（libx265、hevc_qsv、libsvtav1 的报告都判 HDR10 已保留）。体积与画质的主观判断需要真实手机素材 |
+| 3 | 通过（合成素材） | `tonemapped_output_is_tagged_bt709_by_the_filter`、`qsv_keeps_hdr10_and_mp4_gets_hvc1`；`args_facts.rs` 断言全部黄金样本的 MP4 HEVC 带 `hvc1` 与 faststart |
+| 4 | 待真实素材 | 杜比视界识别（fixture）、`-dolbyvision 1` 与 MP4 的 `-strict unofficial`（`args_facts.rs`）、报告核对配置记录与 RPU（`verify.rs` 单元测试）都已覆盖；本机没有带 RPU 的素材，没有做真实编码 |
+| 5 | 通过（PGS 除外） | `bluray_collection_copies_every_track_sub_and_chapter`、`remux_copies_every_track_chapter_and_attachment`；桌面端批量里 3 个多音轨 + 章节 + 文本字幕的 MKV 报告全部通过。ffmpeg 没有 PGS 编码器，造不出带 PGS 的样本，PGS 路径只有 fixture 测试 |
+| 6 | 通过 | `bluray_streaming_lossless_fix_switches_to_mkv_and_copies_truehd`、`every_fix_resolves_its_conflict`；保真度面板在转码前列出冲突与修正按钮（`panels.test.tsx`） |
+| 7 | 通过 | 桌面端关掉 GPU 编码后，20 个文件 × 8 个场景全部完成，决策说明写明"没有可用的硬件编码器，已改用软件编码"；`queue_sim.rs` 的 `hardware_encoding_disabled_in_settings_uses_software` |
+| 8 | 通过 | 桌面端导入 20 个混合素材（H.264 / HEVC HDR10 / HLG / 可变帧率 / 多音轨 / AV1 / VP9 / MPEG-4，MP4 / MKV / MOV / WebM / AVI），全部完成且报告全部通过；第二批跑到一半强杀应用，ffmpeg 随之结束，重启后 2 个中断的任务带警告重新排队、临时文件已删，20 个全部完成，目标目录没有残留 |
+| 9 | 通过 | `vfr_to_cfr_gives_strictly_constant_frame_rate_and_aligned_audio`；桌面端批量里可变帧率素材走剪辑预处理，报告的"固定帧率""音画对齐"都通过 |
+| 10 | Windows 部分通过 | 每个 P0 功能点在 [TODO](todo.md) 各阶段都有对应测试或端到端记录（设计文档第 7 节列出测试分层）。macOS 上的自动化测试由 CI 覆盖，手动部分待实机 |

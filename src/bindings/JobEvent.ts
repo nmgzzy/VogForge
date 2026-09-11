@@ -8,4 +8,8 @@ export type JobEvent = {
 /**
  * Unix 毫秒
  */
-at: number, level: EventLevel, message: string, };
+at: number, level: EventLevel, message: string, 
+/**
+ * ffmpeg 原文，界面上可展开查看（需求 F-9.4：不直接抛原始报错）
+ */
+detail?: string, };

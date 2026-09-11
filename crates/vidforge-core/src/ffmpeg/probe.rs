@@ -17,7 +17,9 @@ use crate::model::{
     SourceHint, SubtitleStream, VideoStream,
 };
 
-use super::classify::key_line;
+use crate::i18n::{Lang, pick};
+
+use super::errors::explain;
 use super::exec::{Runner, args};
 
 const INFO_TIMEOUT: Duration = Duration::from_secs(60);
@@ -32,18 +34,108 @@ pub struct ProbeOutputs {
     pub packets_csv: String,
 }
 
-/// 调 ffprobe 分析一个文件。失败时返回给用户看的中文原因。
-pub fn probe_file(ffprobe: &Path, path: &Path, runner: &dyn Runner) -> Result<MediaInfo, String> {
+/// ffprobe 读得出来、但 VidForge 用不了的文件
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unusable {
+    /// ffprobe 的输出不是合法 JSON
+    Unparsable,
+    NoStreams,
+    /// 只有音频（或只有封面图）：命令构建以视频为中心，放进来只会得到跑不起来的命令
+    AudioOnly,
+}
+
+impl Unusable {
+    pub fn text(self, lang: Lang) -> &'static str {
+        match self {
+            Unusable::Unparsable => pick(lang, "ffprobe 输出无法解析", "The ffprobe output could not be parsed"),
+            Unusable::NoStreams => pick(lang, "文件里没有音视频流", "The file has no audio or video streams"),
+            Unusable::AudioOnly => pick(
+                lang,
+                "文件里没有视频，只有音频。VidForge 只处理视频文件",
+                "The file has only audio and no video. VidForge only handles video files",
+            ),
+        }
+    }
+}
+
+/// 分析失败的原因。给用户看的文字按界面语言在展示时生成（[`ProbeError::describe`]）
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProbeError {
+    /// 启动 ffprobe 失败
+    Spawn(String),
+    Timeout,
+    /// ffprobe 报错，保存 stderr
+    Failed(String),
+    /// 分析出来了但不能用（没有视频流等）
+    Unusable(Unusable),
+}
+
+impl ProbeError {
+    /// 给用户看的原因，以及可展开的 ffprobe 原文
+    pub fn describe(&self, lang: Lang) -> (String, Option<String>) {
+        match self {
+            ProbeError::Spawn(e) => (crate::tr!(lang, "无法运行 ffprobe：{}", "Could not run ffprobe: {}", e), None),
+            ProbeError::Timeout => (
+                crate::i18n::pick(
+                    lang,
+                    "分析超时（60 秒），文件可能在很慢的网络盘上",
+                    "Analysis timed out (60 s); the file may be on a slow network drive",
+                )
+                .into(),
+                None,
+            ),
+            ProbeError::Failed(stderr) => {
+                let e = explain(stderr, lang);
+                (e.sentence(lang), Some(e.raw).filter(|r| !r.is_empty()))
+            }
+            ProbeError::Unusable(u) => (u.text(lang).into(), None),
+        }
+    }
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.describe(Lang::ZhCn) {
+            (reason, Some(raw)) => write!(f, "{reason}（{raw}）"),
+            (reason, None) => f.write_str(&reason),
+        }
+    }
+}
+
+/// 数一条视频流包数（视频每个包一帧）的 ffprobe 参数：只解复用、不解码，但要读完整个文件。
+/// MKV 不记 `nb_frames`，输出校验时靠它补上帧数；队列用可暂停、可取消的进程执行
+pub fn count_frames_args(path: &Path, stream_index: u32) -> Vec<String> {
+    args([
+        "-v",
+        "error",
+        "-select_streams",
+        &stream_index.to_string(),
+        "-count_packets",
+        "-show_entries",
+        "stream=nb_read_packets",
+        "-of",
+        "csv=p=0",
+        &path.to_string_lossy(),
+    ])
+}
+
+/// 解析 [`count_frames_args`] 的输出
+pub fn parse_frame_count(stdout: &str) -> Option<u64> {
+    stdout.lines().next()?.trim().trim_end_matches(',').parse().ok()
+}
+
+/// 调 ffprobe 分析一个文件
+pub fn probe_file(ffprobe: &Path, path: &Path, runner: &dyn Runner) -> Result<MediaInfo, ProbeError> {
     let file = path.to_string_lossy().to_string();
     let run = |a: Vec<String>| runner.run(ffprobe, &a, INFO_TIMEOUT);
 
     let info = run(args(["-v", "error", "-show_format", "-show_streams", "-show_chapters", "-of", "json", &file]))
-        .map_err(|e| format!("无法运行 ffprobe：{e}"))?;
+        .map_err(|e| ProbeError::Spawn(e.to_string()))?;
     if info.timed_out {
-        return Err("分析超时（60 秒），文件可能在很慢的网络盘上".to_string());
+        return Err(ProbeError::Timeout);
     }
     if !info.success() {
-        return Err(explain_probe_error(&info.stderr));
+        return Err(ProbeError::Failed(info.stderr));
     }
 
     let mut outs = ProbeOutputs { info_json: info.stdout, ..Default::default() };
@@ -84,7 +176,7 @@ pub fn probe_file(ffprobe: &Path, path: &Path, runner: &dyn Runner) -> Result<Me
     }
 
     let size = std::fs::metadata(path).map(|m| m.len()).ok();
-    parse_media(&file, size, &outs)
+    parse_media(&file, size, &outs).map_err(ProbeError::Unusable)
 }
 
 /// 是否 MP4 封面图之类的"附带图片"视频流
@@ -101,22 +193,9 @@ pub fn main_video_index(info: &Value) -> Option<u64> {
         .and_then(|s| s["index"].as_u64())
 }
 
-/// 把 ffprobe 的报错翻译成用户能理解的原因，原文保留在括号里
+/// 把 ffprobe 的报错翻译成用户能理解的原因，原文保留在括号里（中文）
 pub fn explain_probe_error(stderr: &str) -> String {
-    let s = stderr.to_ascii_lowercase();
-    let raw = key_line(stderr);
-    let why = if s.contains("moov atom not found") {
-        "文件不完整或已损坏，常见于拍摄中断、复制未完成"
-    } else if s.contains("no such file") {
-        "文件不存在"
-    } else if s.contains("permission denied") {
-        "没有读取权限"
-    } else if s.contains("invalid data found when processing input") {
-        "不是可识别的媒体文件"
-    } else {
-        "ffprobe 无法分析这个文件"
-    };
-    if raw.is_empty() { why.to_string() } else { format!("{why}（{raw}）") }
+    ProbeError::Failed(stderr.to_string()).to_string()
 }
 
 // ───────────────────────── 纯解析 ─────────────────────────
@@ -251,11 +330,14 @@ fn dolby_vision(stream_sd: &Value, frame_sd: &Value) -> Option<DoviInfo> {
     } else {
         None
     };
+    let rpu = side_data(frame_sd, "Dolby Vision RPU Data").is_some()
+        || side_data(frame_sd, "Dolby Vision Metadata").is_some();
     Some(DoviInfo {
         profile,
         bl_compat_id: num(&conf["dv_bl_signal_compatibility_id"]).unwrap_or(0.0) as u8,
         has_enhancement_layer: has_el,
         el_type,
+        rpu,
     })
 }
 
@@ -518,8 +600,8 @@ fn detect_source(
 }
 
 /// 把三份 ffprobe 输出组装成 [`MediaInfo`]。`size` 是文件系统报告的大小，ffprobe 没给时用它。
-pub fn parse_media(path: &str, size: Option<u64>, outs: &ProbeOutputs) -> Result<MediaInfo, String> {
-    let info: Value = serde_json::from_str(&outs.info_json).map_err(|_| "ffprobe 输出无法解析".to_string())?;
+pub fn parse_media(path: &str, size: Option<u64>, outs: &ProbeOutputs) -> Result<MediaInfo, Unusable> {
+    let info: Value = serde_json::from_str(&outs.info_json).map_err(|_| Unusable::Unparsable)?;
     let frame: Value = serde_json::from_str(&outs.frame_json).unwrap_or(Value::Null);
     let first_frame = &frame["frames"][0];
     let packets = parse_packets(&outs.packets_csv);
@@ -546,11 +628,7 @@ pub fn parse_media(path: &str, size: Option<u64>, outs: &ProbeOutputs) -> Result
     }
     if video.is_empty() {
         // 只有音频（或只有封面图）的文件：命令构建以视频为中心，放进来只会得到跑不起来的命令
-        return Err(if audio.is_empty() {
-            "文件里没有音视频流".to_string()
-        } else {
-            "文件里没有视频，只有音频。VidForge 只处理视频文件".to_string()
-        });
+        return Err(if audio.is_empty() { Unusable::NoStreams } else { Unusable::AudioOnly });
     }
 
     let stream_duration = streams.iter().filter_map(stream_duration).fold(0.0_f64, f64::max);

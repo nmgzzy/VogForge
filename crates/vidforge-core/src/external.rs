@@ -5,17 +5,18 @@ use std::time::Duration;
 
 use crate::ffmpeg::exec::{Runner, args};
 use crate::ffmpeg::locate::{Env, LocateOptions, candidate_dirs};
+use crate::i18n::{Lang, pick};
 use crate::model::{ExternalTool, Platform};
 
 struct ToolSpec {
     name: &'static str,
-    purpose: &'static str,
+    purpose: (&'static str, &'static str),
 }
 
 const TOOLS: [ToolSpec; 3] = [
-    ToolSpec { name: "dovi_tool", purpose: "杜比视界 P7 转换（v2）" },
-    ToolSpec { name: "hdr10plus_tool", purpose: "HDR10+ 动态元数据（v2）" },
-    ToolSpec { name: "mkvmerge", purpose: "MKV 高级封装（可选）" },
+    ToolSpec { name: "dovi_tool", purpose: ("杜比视界 P7 转换（v2）", "Dolby Vision P7 conversion (v2)") },
+    ToolSpec { name: "hdr10plus_tool", purpose: ("HDR10+ 动态元数据（v2）", "HDR10+ dynamic metadata (v2)") },
+    ToolSpec { name: "mkvmerge", purpose: ("MKV 高级封装（可选）", "Advanced MKV muxing (optional)") },
 ];
 
 fn extra_dirs(platform: Platform, env: &dyn Env) -> Vec<PathBuf> {
@@ -28,8 +29,13 @@ fn extra_dirs(platform: Platform, env: &dyn Env) -> Vec<PathBuf> {
     }
 }
 
-pub fn probe_external(platform: Platform, env: &dyn Env, runner: &dyn Runner) -> Vec<ExternalTool> {
-    let opts = LocateOptions { user_path: None, bundled_dir: None, platform };
+/// 外部工具的用途说明；不认识的工具返回 None
+pub fn purpose(name: &str, lang: Lang) -> Option<&'static str> {
+    TOOLS.iter().find(|t| t.name == name).map(|t| pick(lang, t.purpose.0, t.purpose.1))
+}
+
+pub fn probe_external(platform: Platform, env: &dyn Env, runner: &dyn Runner, lang: Lang) -> Vec<ExternalTool> {
+    let opts = LocateOptions { user_path: None, bundled_dir: None, platform, lang };
     let mut dirs: Vec<PathBuf> = candidate_dirs(&opts, env).into_iter().map(|c| c.dir).collect();
     dirs.extend(extra_dirs(platform, env));
     let ext = if platform == Platform::Windows { ".exe" } else { "" };
@@ -49,7 +55,7 @@ pub fn probe_external(platform: Platform, env: &dyn Env, runner: &dyn Runner) ->
             ExternalTool {
                 name: spec.name.to_string(),
                 found: path.is_some(),
-                purpose: spec.purpose.to_string(),
+                purpose: pick(lang, spec.purpose.0, spec.purpose.1).to_string(),
                 path: path.map(|p| p.display().to_string()),
                 version,
             }
@@ -100,7 +106,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        let tools = probe_external(Platform::Windows, &env, &runner);
+        let tools = probe_external(Platform::Windows, &env, &runner, crate::i18n::Lang::ZhCn);
         let get = |n: &str| tools.iter().find(|t| t.name == n).unwrap();
         assert!(get("dovi_tool").found);
         assert_eq!(get("dovi_tool").version.as_deref(), Some("dovi_tool 2.1.2"));

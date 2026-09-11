@@ -24,6 +24,7 @@ export type { Platform } from "@/bindings/Platform";
 export type { ProbeProgress } from "@/bindings/ProbeProgress";
 export type { Settings } from "@/bindings/Settings";
 export type { ToneMapPipeline } from "@/bindings/ToneMapPipeline";
+export type { TonemapBlock } from "@/bindings/TonemapBlock";
 export type { TonemapProbe } from "@/bindings/TonemapProbe";
 export type { Vendor } from "@/bindings/Vendor";
 
@@ -43,6 +44,7 @@ export type { VideoStream } from "@/bindings/VideoStream";
 
 // ───────────────────────── 转码计划与引擎产出 ─────────────────────────
 export type { ArgSegment } from "@/bindings/ArgSegment";
+export type { SegmentKind } from "@/bindings/SegmentKind";
 export type { AudioCodec } from "@/bindings/AudioCodec";
 export type { AudioMode } from "@/bindings/AudioMode";
 export type { AudioTrackPlan } from "@/bindings/AudioTrackPlan";

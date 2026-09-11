@@ -1,6 +1,6 @@
 # VidForge TODO
 
-更新于 2026-09-11（阶段 6 完成）
+更新于 2026-09-12（阶段 7 完成，剩 macOS 实机与杜比视界真实素材两项）
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [计划](plan.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
@@ -242,23 +242,28 @@
 
 ## 阶段 7：校验、打磨与 macOS
 
-- [ ] `verify.rs`
-  - [ ] 时长、帧数、流数量
-  - [ ] 色彩标签
-  - [ ] HDR10 元数据（浮点容差比较）
-  - [ ] 杜比视界配置记录与首帧 RPU
-  - [ ] copy 轨道编码一致性
-  - [ ] CFR：`r_frame_rate == avg_frame_rate` 且音视频时长差小于 1 帧
-  - [ ] 保真度报告生成
-- [ ] 引导下载 ffmpeg（Windows：gyan full / BtbN gpl；macOS：jellyfin-ffmpeg）
-- [ ] 设置页接真实配置
-- [ ] i18n：中文与英文
-- [ ] 错误文案：所有 ffmpeg 报错转为中文说明加可行动作，原文可展开
-- [ ] 首次使用引导
-- [ ] 完成通知（设置里的 `notify`）与完成后动作（打开目录 / 源文件移到回收站，需求 F-6.10）
-- [ ] macOS 上父进程被强杀时结束 ffmpeg（没有 `PR_SET_PDEATHSIG`，考虑 kqueue 监视父进程或看门狗）
-- [ ] macOS 构建、签名、VideoToolbox 路径验证
-- [ ] 走完需求文档第 6 节全部验收标准
+- [x] `verify.rs`
+  - [x] 时长、帧数（MKV 输出没有 `nb_frames` 时数包）、流数量
+  - [x] 色彩标签
+  - [x] HDR10 元数据（按有理数求值比较，HEVC 与 AV1 分母不同也能判对）
+  - [x] 杜比视界配置记录与首帧 RPU
+  - [x] HDR10+（勾选保留时核对，重编码如实标红）
+  - [x] copy 轨道编码一致性
+  - [x] CFR：`r_frame_rate == avg_frame_rate` 且音视频时长差小于 1 帧
+  - [x] 保真度报告生成（用户勾选且源里有的每一项）
+- [x] 引导下载 ffmpeg：按平台列出推荐构建（Windows gyan full / BtbN gpl，macOS jellyfin-ffmpeg），应用的 ffmpeg 目录可一键打开；缺关键库时环境页也给出指引
+- [x] 设置页接真实配置（界面语言、重新打开入门引导）
+- [x] i18n：中文与英文（引擎、队列、校验、环境探测、界面全部按语言生成；英文下不残留中文由测试守住）
+- [x] 错误文案：ffmpeg / ffprobe 报错转为说明加可行动作，原文放在可展开的"查看原文"（`ffmpeg/errors.rs`）
+- [x] 首次使用引导：检查环境 → 能力说明 → 建议
+- [x] 完成通知（设置里的 `notify`）与完成后动作（打开输出目录 / 源文件移到回收站，每批确认一次，只处理校验通过的任务）
+- [x] macOS 上父进程被强杀时结束 ffmpeg：每个 ffmpeg 配一个 sh 看门狗（单元测试在 macOS CI 上跑）
+- [x] 持续集成：前端检查（Linux）；Rust 格式、clippy、全部测试与 wasm 构建在 Windows 与 macOS 上各跑一遍，装真实 ffmpeg
+- [x] 960×640 最小窗口下各页面可用（队列页的统计徽章在窄窗口里隐藏）
+- [x] Windows 硬解改写 `-hwaccel d3d11va`：自测时发现远程桌面断开后 `-hwaccel auto` 让 ffmpeg 崩溃（技术事实文档 7.5 节）
+- [~] 走完需求文档第 6 节验收标准：8 条已有证据（见[计划](plan.md)的验收记录），第 4 条待真实杜比视界素材，第 10 条的 macOS 手动部分待实机
+- [ ] macOS 实机：安装包签名与公证、VideoToolbox 编码路径、Homebrew 与 jellyfin-ffmpeg 下的界面降级（需要一台 Mac）
+- [ ] 用真实杜比视界素材（iPhone P8.4）走一遍验收第 4 条，并把 ffprobe 输出补进技术事实文档
 
 ## v2 待办
 

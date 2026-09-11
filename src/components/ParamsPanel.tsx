@@ -1,19 +1,20 @@
 import { useMemo } from "react";
 import { Info } from "lucide-react";
+import { tr } from "@/i18n";
 import type { Codec, Container, FpsInsight, MediaInfo, PlanResult, QualityTier, TranscodePlan } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { CODEC_LABEL, canTonemap, codecAvailable, qualityValue, VENDOR_LABEL } from "@/lib/encoders";
+import { CODEC_LABEL, canTonemap, codecAvailable, qualityValue, vendorLabel } from "@/lib/encoders";
 import { encoderMeta, engineMeta, videoHints } from "@/lib/engine";
 import { channelLabel, formatBitrate, formatFps } from "@/lib/format";
 import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
 import { Badge, Field, Section, Segmented, Select, Switch } from "./ui";
 
-const QUALITY_OPTIONS: { value: QualityTier; label: string }[] = [
-  { value: "lossless", label: "视觉无损" },
-  { value: "high", label: "高" },
-  { value: "standard", label: "标准" },
-  { value: "small", label: "小体积" },
+const qualityOptions = (): { value: QualityTier; label: string }[] => [
+  { value: "lossless", label: tr("视觉无损", "Lossless") },
+  { value: "high", label: tr("高", "High") },
+  { value: "standard", label: tr("标准", "Standard") },
+  { value: "small", label: tr("小体积", "Small") },
 ];
 
 const RESOLUTIONS = ["2160", "1440", "1080", "720", "480"] as const;
@@ -29,28 +30,47 @@ export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: T
   const target = plan.video.fps.kind === "cfr" ? plan.video.fps.fps : recommended;
 
   let hint: { text: string; tone: "vfr" | "warn" } | undefined;
-  if (v.isVfr && !cfr) hint = { text: "导入剪辑软件前建议开启，否则音画会随时间逐渐错位", tone: "vfr" };
-  else if (cfr && hints.extremeVfr) hint = { text: "源帧率波动大，会复制大量帧，编码耗时明显增加", tone: "warn" };
+  if (v.isVfr && !cfr) {
+    const text = tr(
+      "导入剪辑软件前建议开启，否则音画会随时间逐渐错位",
+      "Turn this on before importing into an editor, or audio will slowly drift out of sync",
+    );
+    hint = { text, tone: "vfr" };
+  } else if (cfr && hints.extremeVfr) {
+    const text = tr(
+      "源帧率波动大，会复制大量帧，编码耗时明显增加",
+      "The source frame rate varies a lot, so many frames are duplicated and encoding takes noticeably longer",
+    );
+    hint = { text, tone: "warn" };
+  }
 
   return (
     <div>
       <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border border-line bg-raised/40 px-3 py-1.5">
         <Switch
           checked={cfr}
-          label="转为固定帧率"
+          label={tr("转为固定帧率", "Convert to constant frame rate")}
           onChange={(on) =>
             patch((p) => {
               p.video.fps = on ? { kind: "cfr", fps: recommended } : { kind: "keep" };
             })
           }
         />
-        <span className="text-[13px]">转为固定帧率</span>
+        <span className="text-[13px]">{tr("转为固定帧率", "Convert to constant frame rate")}</span>
         {v.isVfr ? (
-          <Badge tone="vfr" title={`平均 ${formatFps(v.fpsAvg)} fps，名义 ${formatFps(v.fpsNominal)} fps`}>
-            源为可变帧率
+          <Badge
+            tone="vfr"
+            title={tr(
+              `平均 ${formatFps(v.fpsAvg)} fps，名义 ${formatFps(v.fpsNominal)} fps`,
+              `average ${formatFps(v.fpsAvg)} fps, nominal ${formatFps(v.fpsNominal)} fps`,
+            )}
+          >
+            {tr("源为可变帧率", "Variable frame rate source")}
           </Badge>
         ) : (
-          <span className="text-xs text-subtle">源为固定 {formatFps(v.fpsAvg)} fps</span>
+          <span className="text-xs text-subtle">
+            {tr(`源为固定 ${formatFps(v.fpsAvg)} fps`, `Source is constant ${formatFps(v.fpsAvg)} fps`)}
+          </span>
         )}
         {cfr && (
           <>
@@ -64,14 +84,22 @@ export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: T
               }
               options={engineMeta().standardFps.map((s) => ({
                 value: String(s.value),
-                label: `${s.label} fps${Math.abs(s.value - recommended) < 1e-6 ? " 推荐" : ""}`,
+                label: `${s.label} fps${Math.abs(s.value - recommended) < 1e-6 ? tr(" 推荐", " (recommended)") : ""}`,
               }))}
             />
             {insight && (
-              <span className="ml-auto text-xs text-muted tabular" title="转换后用 ffprobe 校验音视频时长差小于 1 帧">
-                {insight.sourceFrames.toLocaleString()} → {insight.targetFrames.toLocaleString()} 帧
-                {insight.duplicated > 0 && `，复制 ${insight.duplicated.toLocaleString()}`}
-                {insight.dropped > 0 && `，丢弃 ${insight.dropped.toLocaleString()}`}
+              <span
+                className="ml-auto text-xs text-muted tabular"
+                title={tr(
+                  "转换后用 ffprobe 校验音视频时长差小于 1 帧",
+                  "After encoding, ffprobe checks that audio and video differ by less than one frame",
+                )}
+              >
+                {insight.sourceFrames.toLocaleString()} → {insight.targetFrames.toLocaleString()} {tr("帧", "frames")}
+                {insight.duplicated > 0 &&
+                  tr(`，复制 ${insight.duplicated.toLocaleString()}`, `, ${insight.duplicated.toLocaleString()} duplicated`)}
+                {insight.dropped > 0 &&
+                  tr(`，丢弃 ${insight.dropped.toLocaleString()}`, `, ${insight.dropped.toLocaleString()} dropped`)}
               </span>
             )}
           </>
@@ -83,20 +111,20 @@ export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: T
 }
 
 function AudioChips({ media, plan }: { media: MediaInfo; plan: TranscodePlan }) {
-  if (plan.audio.length === 0) return <span className="text-xs text-subtle">源文件没有音轨</span>;
+  if (plan.audio.length === 0) return <span className="text-xs text-subtle">{tr("源文件没有音轨", "The source has no audio")}</span>;
   return (
     <>
       {plan.audio.map((t, i) => {
         const src = media.audio.find((a) => a.index === t.sourceIndex);
-        const name = t.action === "copy" ? (src?.title ?? src?.codec.toUpperCase() ?? "音轨") : t.title ?? src?.title;
+        const name = t.action === "copy" ? (src?.title ?? src?.codec.toUpperCase() ?? tr("音轨", "Track")) : t.title ?? src?.title;
         const detail =
           t.action === "copy"
-            ? "复制"
+            ? tr("复制", "copy")
             : `${t.codec?.toUpperCase()} ${t.channels ? channelLabel(t.channels) : ""} ${t.bitrateKbps}k`;
         return (
           <span
             key={i}
-            title={t.role === "compat" ? "新增的兼容音轨" : undefined}
+            title={t.role === "compat" ? tr("新增的兼容音轨", "Added compatible track") : undefined}
             className={cn(
               "inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-md border px-2 text-[11.5px]",
               t.role === "compat" ? "border-dashed border-line-strong" : "border-line bg-raised/50",
@@ -104,7 +132,7 @@ function AudioChips({ media, plan }: { media: MediaInfo; plan: TranscodePlan }) 
           >
             <span className="truncate">{t.action === "copy" ? name : detail}</span>
             <span className={cn("shrink-0", src?.atmos && t.action === "copy" ? "text-atmos" : "text-subtle")}>
-              {t.action === "copy" ? "· 复制" : "· 新增"}
+              {t.action === "copy" ? tr("· 复制", "· copy") : tr("· 新增", "· new")}
             </span>
           </span>
         );
@@ -127,38 +155,38 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
   const shortEdge = v ? Math.min(v.width, v.height) : 0;
 
   const encoderOptions = [
-    { value: "auto", label: `自动（${vp.encoder}）` },
+    { value: "auto", label: tr(`自动（${vp.encoder}）`, `Auto (${vp.encoder})`) },
     ...caps.encoders
       .filter((e) => e.codec === vp.codec)
       .map((e) => ({
         value: e.id,
-        label: `${e.id} · ${VENDOR_LABEL[e.vendor]}${e.usable ? "" : "（不可用）"}`,
+        label: `${e.id} · ${vendorLabel(e.vendor)}${e.usable ? "" : tr("（不可用）", " (unavailable)")}`,
         disabled: !e.usable,
       })),
   ];
 
   return (
-    <Section step={2} title="关键参数">
+    <Section step={2} title={tr("关键参数", "Key settings")}>
       {copy && (
         <p className="mb-3 flex items-center gap-1.5 text-xs text-muted">
           <Info className="size-3.5" />
-          原样封装不重新编码视频，画面参数不可调整。
+          {tr("原样封装不重新编码视频，画面参数不可调整。", "Remux does not re-encode the video, so picture settings cannot change.")}
         </p>
       )}
 
       <div className={cn("grid gap-x-5 gap-y-3.5 md:grid-cols-2", copy && "pointer-events-none opacity-40")}>
         <Field
-          label="画质"
+          label={tr("画质", "Quality")}
           hint={
             byBitrate
-              ? `${rc.kind === "two_pass" ? "两遍 · " : ""}平均 ${formatBitrate(rc.kbps * 1000)}`
-              : `${meta.param} ${vp.qualityValue}${rc.kind === "capped" ? ` · 峰值 ${formatBitrate(rc.kbps * 1000)}` : ""}`
+              ? `${rc.kind === "two_pass" ? tr("两遍 · ", "2-pass · ") : ""}${tr("平均", "avg")} ${formatBitrate(rc.kbps * 1000)}`
+              : `${meta.param} ${vp.qualityValue}${rc.kind === "capped" ? ` · ${tr("峰值", "peak")} ${formatBitrate(rc.kbps * 1000)}` : ""}`
           }
         >
           <Segmented
             className={cn("w-full", byBitrate && "pointer-events-none opacity-40")}
             value={vp.quality}
-            options={QUALITY_OPTIONS}
+            options={qualityOptions()}
             onChange={(q) =>
               patch((p) => {
                 p.video.quality = q;
@@ -168,7 +196,7 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
           />
         </Field>
 
-        <Field label="编码格式">
+        <Field label={tr("编码格式", "Format")}>
           <Segmented<Codec>
             className="w-full"
             value={vp.codec}
@@ -179,7 +207,7 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
                 value: c,
                 label: CODEC_LABEL[c],
                 disabled: off,
-                title: off ? `当前 ffmpeg 没有可用的 ${CODEC_LABEL[c]} 编码器` : undefined,
+                title: off ? tr(`当前 ffmpeg 没有可用的 ${CODEC_LABEL[c]} 编码器`, `This ffmpeg has no usable ${CODEC_LABEL[c]} encoder`) : undefined,
               };
             })}
             onChange={(c) =>
@@ -191,7 +219,7 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
           />
         </Field>
 
-        <Field label="分辨率">
+        <Field label={tr("分辨率", "Resolution")}>
           <Select
             value={vp.resolution}
             onChange={(r) =>
@@ -200,17 +228,17 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
               })
             }
             options={[
-              { value: "source", label: v ? `原始 ${v.width}×${v.height}` : "原始" },
+              { value: "source", label: v ? tr(`原始 ${v.width}×${v.height}`, `Source ${v.width}×${v.height}`) : tr("原始", "Source") },
               ...RESOLUTIONS.map((r) => ({
                 value: r,
-                label: `${r === "2160" ? "4K" : `${r}p`}${Number(r) >= shortEdge ? "（不放大）" : ""}`,
+                label: `${r === "2160" ? "4K" : `${r}p`}${Number(r) >= shortEdge ? tr("（不放大）", " (no upscaling)") : ""}`,
                 disabled: Number(r) >= shortEdge,
               })),
             ]}
           />
         </Field>
 
-        <Field label="编码器">
+        <Field label={tr("编码器", "Encoder")}>
           <Select
             mono
             value={vp.encoderAuto ? "auto" : vp.encoder}
@@ -230,14 +258,21 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
           />
         </Field>
 
-        <Field label="容器">
+        <Field label={tr("容器", "Container")}>
           <Segmented<Container>
             className="w-full"
             value={plan.container}
             options={[
-              { value: "mkv", label: "MKV", title: "容纳能力最强：杜比视界、无损音轨、图形字幕、章节" },
-              { value: "mp4", label: "MP4", title: "兼容性最好" },
-              { value: "mov", label: "MOV", title: "剪辑软件友好" },
+              {
+                value: "mkv",
+                label: "MKV",
+                title: tr(
+                  "容纳能力最强：杜比视界、无损音轨、图形字幕、章节",
+                  "Holds the most: Dolby Vision, lossless audio, image subtitles, chapters",
+                ),
+              },
+              { value: "mp4", label: "MP4", title: tr("兼容性最好", "Most compatible") },
+              { value: "mov", label: "MOV", title: tr("剪辑软件友好", "Editor friendly") },
             ]}
             onChange={(c) =>
               patch((p) => {
@@ -253,12 +288,14 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
               className="w-full"
               value={vp.hdrAction === "tonemap" ? "tonemap" : "keep"}
               options={[
-                { value: "keep", label: "保留 HDR" },
+                { value: "keep", label: tr("保留 HDR", "Keep HDR") },
                 {
                   value: "tonemap",
-                  label: "转为 SDR",
+                  label: tr("转为 SDR", "Convert to SDR"),
                   disabled: !canTonemap(caps),
-                  title: canTonemap(caps) ? "做色调映射，适合手机与普通屏幕" : "当前 ffmpeg 没有可用的色调映射滤镜",
+                  title: canTonemap(caps)
+                    ? tr("做色调映射，适合手机与普通屏幕", "Tone maps for phones and regular screens")
+                    : tr("当前 ffmpeg 没有可用的色调映射滤镜", "This ffmpeg has no usable tone mapping filter"),
                 },
               ]}
               onChange={(a) =>
@@ -279,13 +316,13 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
       </div>
 
       <div className={cn("mt-3.5", copy && "pointer-events-none opacity-40")}>
-        <Field label="帧率">
+        <Field label={tr("帧率", "Frame rate")}>
           <FpsControl media={media} plan={plan} insight={result.fpsInsight} />
         </Field>
       </div>
 
       <div className="mt-3.5">
-        <Field label="音频">
+        <Field label={tr("音频", "Audio")}>
           <div className="flex flex-wrap items-center gap-1.5">
             <Select
               className="w-52"
@@ -296,9 +333,9 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
                 })
               }
               options={[
-                { value: "copy_all", label: "全部原样复制" },
-                { value: "original_plus_compat", label: "原样复制 + 兼容立体声" },
-                { value: "compat_only", label: "转为兼容格式" },
+                { value: "copy_all", label: tr("全部原样复制", "Copy all") },
+                { value: "original_plus_compat", label: tr("原样复制 + 兼容立体声", "Copy + compatible stereo") },
+                { value: "compat_only", label: tr("转为兼容格式", "Convert to compatible") },
               ]}
             />
             <AudioChips media={media} plan={plan} />

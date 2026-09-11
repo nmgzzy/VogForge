@@ -4,7 +4,7 @@ import { MOCK_MEDIA } from "@/mock/media";
 import { DEFAULT_SETTINGS } from "./defaults";
 import { encoderMeta, engineMeta, evaluate, recommendPlan, suggestScenario, today, updatePlan, videoHints } from "./engine";
 import { quoteArg } from "./format";
-import { SCENARIOS } from "./scenarios";
+import { scenarios } from "./scenarios";
 import type { MediaInfo } from "./types";
 
 const media = (id: string): MediaInfo => MOCK_MEDIA.find((m) => m.id === id)!;
@@ -74,7 +74,7 @@ describe("WebAssembly 决策引擎", () => {
   });
 
   // 复制到 PowerShell 时，含逗号的参数（滤镜链、pan 矩阵）必须整体加引号，否则会被当成数组拆开
-  it.each(MOCK_MEDIA.flatMap((m) => SCENARIOS.map((s) => [m.id, s.id] as const)))("%s / %s：含逗号的参数都被引号包裹", (id, s) => {
+  it.each(MOCK_MEDIA.flatMap((m) => scenarios().map((s) => [m.id, s.id] as const)))("%s / %s：含逗号的参数都被引号包裹", (id, s) => {
     const m = media(id);
     for (const a of evaluate(m, recommendPlan(m, s, caps), caps).args) {
       if (a.includes(",")) expect(quoteArg(a).startsWith("'")).toBe(true);

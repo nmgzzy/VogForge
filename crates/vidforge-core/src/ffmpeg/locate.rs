@@ -8,7 +8,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::i18n::Lang;
 use crate::model::{LocateSource, Platform};
+use crate::tr;
 
 use super::exec::{Runner, args};
 use super::parse::{VersionInfo, parse_version};
@@ -118,6 +120,8 @@ pub struct LocateOptions {
     /// 应用目录下存放下载构建的位置
     pub bundled_dir: Option<PathBuf>,
     pub platform: Platform,
+    /// 问题说明的语言
+    pub lang: Lang,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -242,7 +246,7 @@ enum Attempt {
     Found(Box<Located>),
 }
 
-fn try_candidate(c: &Candidate, platform: Platform, env: &dyn Env, runner: &dyn Runner) -> Attempt {
+fn try_candidate(c: &Candidate, platform: Platform, env: &dyn Env, runner: &dyn Runner, lang: Lang) -> Attempt {
     let (ffmpeg_name, ffprobe_name) = exe_names(platform);
     let ffmpeg = c.dir.join(ffmpeg_name);
     if !env.is_file(&ffmpeg) {
@@ -250,22 +254,29 @@ fn try_candidate(c: &Candidate, platform: Platform, env: &dyn Env, runner: &dyn 
     }
     let ffprobe = c.dir.join(ffprobe_name);
     if !env.is_file(&ffprobe) {
-        return Attempt::Broken(format!("{} 里只有 ffmpeg，没有 ffprobe", c.dir.display()));
+        let dir = c.dir.display();
+        return Attempt::Broken(tr!(lang, "{} 里只有 ffmpeg，没有 ffprobe", "{} has ffmpeg but no ffprobe", dir));
     }
     let out = match runner.run(&ffmpeg, &args(["-hide_banner", "-version"]), VERSION_TIMEOUT) {
         Ok(o) => o,
-        Err(e) => return Attempt::Broken(format!("无法运行 {}：{e}", ffmpeg.display())),
+        Err(e) => return Attempt::Broken(tr!(lang, "无法运行 {}：{}", "Could not run {}: {}", ffmpeg.display(), e)),
     };
     let text = out.combined();
     let Some(version) = parse_version(&text) else {
-        return Attempt::Broken(format!("{} 没有输出可识别的版本信息", ffmpeg.display()));
+        let exe = ffmpeg.display();
+        return Attempt::Broken(tr!(
+            lang,
+            "{} 没有输出可识别的版本信息",
+            "{} did not print recognizable version info",
+            exe
+        ));
     };
     let ffprobe_version = runner
         .run(&ffprobe, &args(["-hide_banner", "-version"]), VERSION_TIMEOUT)
         .ok()
         .and_then(|o| parse_version(&o.combined()));
     if ffprobe_version.is_none() {
-        return Attempt::Broken(format!("无法运行 {}", ffprobe.display()));
+        return Attempt::Broken(tr!(lang, "无法运行 {}", "Could not run {}", ffprobe.display()));
     }
     Attempt::Found(Box::new(Located {
         ffmpeg,
@@ -285,17 +296,22 @@ pub fn locate(opts: &LocateOptions, env: &dyn Env, runner: &dyn Runner) -> Locat
     };
     let mut fallback: Option<Located> = None;
     for c in &candidates {
-        let found = match try_candidate(c, opts.platform, env, runner) {
+        let found = match try_candidate(c, opts.platform, env, runner, opts.lang) {
             Attempt::Found(found) => *found,
             Attempt::Absent => {
                 if c.source == LocateSource::User {
-                    report.problems.insert(0, format!("设置里指定的 {} 里没有 ffmpeg", c.dir.display()));
+                    let dir = c.dir.display();
+                    let msg = tr!(opts.lang, "设置里指定的 {} 里没有 ffmpeg", "No ffmpeg in {} set in Settings", dir);
+                    report.problems.insert(0, msg);
                 }
                 continue;
             }
             Attempt::Broken(reason) => {
                 if c.source == LocateSource::User {
-                    report.problems.insert(0, format!("设置里指定的 {} 不可用", c.dir.display()));
+                    let dir = c.dir.display();
+                    let msg =
+                        tr!(opts.lang, "设置里指定的 {} 不可用", "The ffmpeg in {} set in Settings is unusable", dir);
+                    report.problems.insert(0, msg);
                 }
                 report.problems.push(reason.clone());
                 report.broken.push(reason);
@@ -372,7 +388,7 @@ mod tests {
     }
 
     fn win_opts() -> LocateOptions {
-        LocateOptions { user_path: None, bundled_dir: None, platform: Platform::Windows }
+        LocateOptions { user_path: None, bundled_dir: None, platform: Platform::Windows, lang: Lang::ZhCn }
     }
 
     #[test]
@@ -384,6 +400,7 @@ mod tests {
             user_path: Some(PathBuf::from(r"D:\user")),
             bundled_dir: Some(PathBuf::from(r"C:\app\ffmpeg\bin")),
             platform: Platform::Windows,
+            lang: Lang::ZhCn,
         };
         let c = candidate_dirs(&opts, &env);
         let sources: Vec<LocateSource> = c.iter().map(|c| c.source).collect();
@@ -516,7 +533,7 @@ mod tests {
     #[test]
     fn macos_common_locations() {
         let env = FakeEnv::default();
-        let opts = LocateOptions { user_path: None, bundled_dir: None, platform: Platform::Macos };
+        let opts = LocateOptions { user_path: None, bundled_dir: None, platform: Platform::Macos, lang: Lang::ZhCn };
         let dirs: Vec<String> = candidate_dirs(&opts, &env).iter().map(|c| c.dir.display().to_string()).collect();
         assert_eq!(dirs, ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]);
     }

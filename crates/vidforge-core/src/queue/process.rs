@@ -13,7 +13,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::ffmpeg::exec::{SystemRunner, command};
-use crate::ffmpeg::probe::probe_file;
+use crate::ffmpeg::probe::{ProbeError, probe_file};
 use crate::model::MediaInfo;
 
 /// stderr 只保留最后这么多行
@@ -48,7 +48,7 @@ pub trait Tools: Send + Sync {
     /// 启动 ffmpeg。编码、预检、响度测量都经过它，才能被暂停、取消与随应用一起结束
     fn spawn(&self, program: &Path, args: &[String]) -> io::Result<Box<dyn Process>>;
     /// 分析输出文件，用于校验
-    fn probe(&self, ffprobe: &Path, file: &Path) -> Result<MediaInfo, String>;
+    fn probe(&self, ffprobe: &Path, file: &Path) -> Result<MediaInfo, ProbeError>;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -59,8 +59,8 @@ impl Tools for SystemTools {
         Ok(Box::new(SystemProcess::spawn(program, args)?))
     }
 
-    fn probe(&self, ffprobe: &Path, file: &Path) -> Result<MediaInfo, String> {
-        probe_file(ffprobe, file, &SystemRunner).map_err(|e| e.to_string())
+    fn probe(&self, ffprobe: &Path, file: &Path) -> Result<MediaInfo, ProbeError> {
+        probe_file(ffprobe, file, &SystemRunner)
     }
 }
 
@@ -259,9 +259,9 @@ mod os {
 
 #[cfg(unix)]
 mod os {
-    use std::process::{Child, Command};
+    use std::process::{Child, Command, Stdio};
 
-    /// Linux：父进程退出时子进程收到 SIGKILL。macOS 没有对应机制（阶段 7 处理）
+    /// Linux：父进程退出时子进程收到 SIGKILL。macOS 没有这个机制，由 [`bind`] 起的看门狗处理
     pub fn die_with_parent(cmd: &mut Command) {
         #[cfg(target_os = "linux")]
         {
@@ -277,7 +277,33 @@ mod os {
         let _ = cmd;
     }
 
-    pub fn bind(_child: &Child) {}
+    /// macOS 等没有 `PR_SET_PDEATHSIG` 的系统：给每个 ffmpeg 配一个看门狗，应用被强杀后一秒内结束它
+    pub fn bind(child: &Child) {
+        if cfg!(not(target_os = "linux")) {
+            watch(std::process::id(), child.id());
+        }
+    }
+
+    /// 看门狗是一个 sh 小循环：父进程与子进程都还在就每秒看一眼；父进程没了而子进程还在，就结束子进程。
+    /// 它是应用的子进程，应用被杀后由 launchd 接管继续跑完这个循环。用一个线程等它退出，免得留下僵尸进程
+    pub fn watch(parent: u32, child: u32) {
+        let script = format!(
+            "while kill -0 {parent} 2>/dev/null && kill -0 {child} 2>/dev/null; do sleep 1; done; \
+             kill -0 {parent} 2>/dev/null || kill -9 {child} 2>/dev/null"
+        );
+        let spawned = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut dog) = spawned {
+            std::thread::spawn(move || {
+                let _ = dog.wait();
+            });
+        }
+    }
 
     pub fn suspend(pid: u32) -> bool {
         // SAFETY: 向自己启动的子进程发信号
@@ -302,5 +328,29 @@ mod os {
 
     pub fn resume(_pid: u32) -> bool {
         false
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// 看门狗：假的"父进程"退出后，子进程在几秒内被结束；父进程还在时不动它
+    #[test]
+    fn watchdog_kills_the_child_once_the_parent_is_gone() {
+        let spawn = |secs: &str| Command::new("sleep").arg(secs).stdin(Stdio::null()).spawn().unwrap();
+        let mut parent = spawn("1");
+        let mut child = spawn("30");
+        super::os::watch(parent.id(), child.id());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(child.try_wait().unwrap().is_none(), "父进程还在时不能动子进程");
+        // 回收父进程，kill -0 才会失败（僵尸进程对 kill -0 仍有响应）
+        parent.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "父进程退出后子进程没有被结束");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }

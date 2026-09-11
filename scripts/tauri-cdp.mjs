@@ -8,6 +8,7 @@
 //            wait:<文本>        等待页面出现该文本（最长 30 秒）
 //            fill:<占位文字>|<值> 填写输入框并回车
 //            eval:<表达式>      在页面里求值并打印结果
+//            size:<宽>x<高>     模拟窗口尺寸（检查最小窗口 960×640 的布局）
 //            sleep:<毫秒>
 import { chromium } from "playwright-core";
 
@@ -37,6 +38,10 @@ for (const step of process.argv.slice(2)) {
     console.log(`填写 ${placeholder} = ${value}`);
   } else if (cmd === "eval") {
     console.log(JSON.stringify(await page.evaluate(arg), null, 2));
+  } else if (cmd === "size") {
+    const [width, height] = arg.split("x").map(Number);
+    await page.setViewportSize({ width, height });
+    console.log(`尺寸 ${width}×${height}`);
   } else if (cmd === "sleep") {
     await page.waitForTimeout(Number(arg));
   } else {

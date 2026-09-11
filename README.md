@@ -2,7 +2,7 @@
 
 Windows / macOS 桌面视频转码工具。后端调用系统 ffmpeg，按用途自动推荐参数，并能判断、保留、核对杜比视界、HDR、杜比全景声等高价值信息。
 
-当前处于**阶段 6 完成**：Rust 核心库能定位 ffmpeg、做三层能力探测（编译能力、硬件设备初始化、真实试编码），用 ffprobe 分析拖入的文件与文件夹（HDR10 / HLG / 杜比视界 / 全景声 / 无损音轨 / 图形字幕 / 可变帧率 / 拍摄设备），按场景推荐参数并解释每条决定，判定保真度冲突并给出一键修正，生成已在真实 ffmpeg 上验证过的转码命令（含四种码率控制与两遍编码）。决策引擎编译成 WebAssembly 在界面里运行，桌面应用与浏览器预览用的是同一份 Rust 代码。批量队列用真实 ffmpeg 执行：软编与硬编按并发票据同时跑，暂停、取消、重试、调序，硬件编码失败按分类沿回退链换编码器，输出先写临时文件、成功后才改名，应用被强杀后重启能恢复队列，完成后用 ffprobe 做基础校验。下一步是阶段 7 的保真度报告、打磨与 macOS。
+当前处于**阶段 7 完成**（剩 macOS 实机与杜比视界真实素材两项验证）：Rust 核心库能定位 ffmpeg、做三层能力探测（编译能力、硬件设备初始化、真实试编码），用 ffprobe 分析拖入的文件与文件夹（HDR10 / HLG / 杜比视界 / 全景声 / 无损音轨 / 图形字幕 / 可变帧率 / 拍摄设备），按场景推荐参数并解释每条决定，判定保真度冲突并给出一键修正，生成已在真实 ffmpeg 上验证过的转码命令（含四种码率控制与两遍编码）。决策引擎编译成 WebAssembly 在界面里运行，桌面应用与浏览器预览用的是同一份 Rust 代码。批量队列用真实 ffmpeg 执行：软编与硬编按并发票据同时跑，暂停、取消、重试、调序，硬件编码失败按分类沿回退链换编码器，输出先写临时文件、成功后才改名，应用被强杀后重启能恢复队列。每个任务完成后用 ffprobe 逐项核对，生成保真度报告（HDR10 元数据按有理数比较，杜比视界核对配置记录与 RPU）。界面与引擎的说明支持中文和英文，ffmpeg 报错转成原因加可行动作、原文可展开；首次启动有入门引导，缺 ffmpeg 或缺关键库时给出下载指引；一批任务跑完可以发系统通知、打开输出目录或把校验通过的源文件移到回收站。
 
 ## 文档
 
@@ -48,6 +48,8 @@ pnpm bindings     # 改了 Rust 模型后重新生成 src/bindings/ 下的 TS �
 - 引擎有四道网：`engine_behavior.rs` 断言推荐、常识保护、保真度与修正、码率控制的行为；`args_facts.rs` 在全部样本上断言技术事实；`golden_engine.rs` 锁住约 200 个样本的完整产出；insta 快照锁住关键组合的命令与场景推荐一览。规则有意变更后用 `UPDATE_GOLDEN=1 cargo test -p vidforge-core --test golden_engine` 与 `INSTA_UPDATE=always cargo test -p vidforge-core` 重写，审阅 diff 后再 `pnpm wasm`。
 - 队列有两层测试：`queue_sim.rs` 用脚本化的假进程逐条核对调度规则（并发票据、取消、暂停、回退、崩溃恢复）；`queue_real.rs` 用真实 ffmpeg 跑 10 个合成素材、真实挂起与取消、NVENC 回退到 QSV、响度标准化。
 - 桌面应用端到端：以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 pnpm tauri dev` 启动后，用 `node scripts/tauri-cdp.mjs` 驱动窗口与截图（仅 Windows）。
+- 英文界面：`src/i18n/english.test.tsx` 在英文下渲染每个页面，`engine_behavior.rs` 的 `english_output_has_no_chinese_left` 检查引擎的全部输出，都不允许残留中文。
+- 持续集成（`.github/workflows/ci.yml`）：前端检查跑在 Linux；Rust 格式、clippy、全部测试与 wasm 构建在 Windows 与 macOS 上各跑一遍，装真实 ffmpeg（macOS 用 Homebrew 版），集成测试通过 `VIDFORGE_TEST_FFMPEG` 找到它。
 
 ## 目录
 
@@ -58,7 +60,8 @@ src/
   bindings/      ts-rs 从 Rust 生成的类型（勿手改）
   components/    界面组件
   views/         五个页面：转码 / 队列 / 环境 / 预设 / 设置
-  stores/        Zustand 状态：ui / capability / settings / project / queue
+  stores/        Zustand 状态：ui / capability / settings / project / queue，run-end 管一批任务跑完后的动作
+  i18n/          界面语言：tr("中文", "English")
   mock/          浏览器预览用的示例素材、环境与队列模拟
   lib/           引擎包装（engine.ts）、界面文案表、类型定义与纯函数工具
   wasm/pkg/      决策引擎的 WebAssembly 包（pnpm wasm 生成，勿手改）

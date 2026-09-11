@@ -3,7 +3,7 @@ source: crates/vidforge-core/tests/args_facts.rs
 expression: text
 ---
 全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
-输入   -hwaccel auto -init_hw_device opencl=ocl -filter_hw_device ocl -i D:\素材\2026-08 京都\IMG_4521.MOV
+输入   -hwaccel d3d11va -init_hw_device opencl=ocl -filter_hw_device ocl -i D:\素材\2026-08 京都\IMG_4521.MOV
 映射   -map 0:0 -map 0:1 -map_metadata 0
 视频   -c:v h264_qsv -pix_fmt nv12 -preset medium -global_quality 24
 滤镜   -vf format=p010,hwupload,tonemap_opencl=tonemap=hable:desat=0:t=bt709:m=bt709:p=bt709:r=tv:format=nv12,hwdownload,format=nv12,scale=-2:720:flags=lanczos

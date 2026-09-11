@@ -32,7 +32,8 @@
         "dolbyVision": {
           "profile": 8,
           "blCompatId": 4,
-          "hasEnhancementLayer": false
+          "hasEnhancementLayer": false,
+          "rpu": true
         },
         "frameCount": 3959
       }
@@ -99,7 +100,8 @@
           "profile": 7,
           "blCompatId": 6,
           "hasEnhancementLayer": true,
-          "elType": "FEL"
+          "elType": "FEL",
+          "rpu": true
         },
         "frameCount": 236745
       }

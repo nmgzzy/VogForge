@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::ffmpeg::classify::{classify, key_line};
+use crate::ffmpeg::errors::explain;
+use crate::ffmpeg::probe::{count_frames_args, parse_frame_count};
 use crate::ffmpeg::progress::{ProgressParser, SpeedTracker, overall_eta, overall_percent};
+use crate::i18n::{Lang, pick};
 use crate::model::{
     Capabilities, EventLevel, FailureKind, JobProgress, JobProgressEvent, JobStatus, MediaInfo, ReportItem,
     TranscodePlan,
@@ -18,7 +21,8 @@ use crate::pipeline::args::{build_arg_segments, build_arg_segments_measured, bui
 use crate::pipeline::loudness::{measure_all, parse_measure};
 use crate::pipeline::text::{format_bytes, format_percent};
 use crate::pipeline::update_plan;
-use crate::verify::basic_report;
+use crate::tr;
+use crate::verify;
 
 use super::fallback::{self, Recovery};
 use super::files::{self, Target};
@@ -44,7 +48,10 @@ pub(super) fn run(inner: Arc<Inner>, id: String) {
     let Some(p) = prepare(&inner, &id) else { return };
     let attempts = inner.lock().jobs.iter().find(|j| j.id == id).map_or(0, |j| j.attempts);
     if attempts > MAX_ATTEMPTS {
-        inner.finish(&id, JobStatus::Failed, EventLevel::Error, format!("已尝试 {MAX_ATTEMPTS} 次仍未成功，停止重试"));
+        let lang = p.env.settings.language;
+        let msg =
+            tr!(lang, "已尝试 {} 次仍未成功，停止重试", "Still failing after {} attempts; giving up", MAX_ATTEMPTS);
+        inner.finish(&id, JobStatus::Failed, EventLevel::Error, msg);
         return;
     }
     execute(&inner, &id, p);
@@ -66,18 +73,27 @@ fn cancelled(inner: &Inner, id: &str) -> bool {
 }
 
 /// 取消或退出时的收尾；退出时不改状态，下次启动按"没跑完"恢复
-fn stop(inner: &Inner, id: &str, temp: &Path) {
+fn stop(inner: &Inner, id: &str, temp: &Path, lang: Lang) {
     files::cleanup(temp);
     if inner.lock().shutdown {
         return;
     }
-    inner.finish(id, JobStatus::Cancelled, EventLevel::Info, "已取消，临时文件已删除，目标目录无残留");
+    let msg = pick(
+        lang,
+        "已取消，临时文件已删除，目标目录无残留",
+        "Cancelled; the temporary file was deleted and nothing was left in the output folder",
+    );
+    inner.finish(id, JobStatus::Cancelled, EventLevel::Info, msg);
 }
 
 fn execute(inner: &Inner, id: &str, p: Prepared) {
     let Prepared { media, plan, env, caps } = p;
     let ffmpeg = PathBuf::from(&caps.ffmpeg_path);
     let conflict = env.settings.conflict;
+    let lang = env.settings.language;
+    let cannot_start = |e: std::io::Error| {
+        tr!(lang, "无法启动 ffmpeg（{}）：{}", "Could not start ffmpeg ({}): {}", ffmpeg.display(), e)
+    };
 
     // ── 输出位置 ──
     // 源文件本身、别的任务正在写的目标都不能写：在队列状态里原子地选定并登记，避免两个同名任务写同一个临时文件
@@ -95,14 +111,21 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             }
             Target::Skip => {
                 drop(s);
-                let msg = format!("目标文件已存在，按设置跳过：{}", desired.display());
+                let msg = tr!(
+                    lang,
+                    "目标文件已存在，按设置跳过：{}",
+                    "The target already exists; skipped as configured: {}",
+                    desired.display()
+                );
                 return inner.finish(id, JobStatus::Skipped, EventLevel::Info, msg);
             }
         }
     };
     if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
         if let Err(e) = fs::create_dir_all(dir) {
-            inner.finish(id, JobStatus::Failed, EventLevel::Error, format!("无法创建输出目录 {}：{e}", dir.display()));
+            let msg =
+                tr!(lang, "无法创建输出目录 {}：{}", "Could not create the output folder {}: {}", dir.display(), e);
+            inner.finish(id, JobStatus::Failed, EventLevel::Error, msg);
             return;
         }
     }
@@ -120,10 +143,21 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             j.encoder_used = plan.video.encoder;
         }
         if files::same_path(&desired, &source) {
-            let msg = format!("输出路径与源文件相同，改名为 {}，源文件不会被覆盖", file_name(&target));
+            let msg = tr!(
+                lang,
+                "输出路径与源文件相同，改名为 {}，源文件不会被覆盖",
+                "The output path equals the source file; writing {} instead so the source is never overwritten",
+                file_name(&target)
+            );
             inner.event(&mut s, id, EventLevel::Warn, msg);
         } else if target != desired {
-            inner.event(&mut s, id, EventLevel::Info, format!("目标文件已存在，改名为 {}", file_name(&target)));
+            let msg = tr!(
+                lang,
+                "目标文件已存在，改名为 {}",
+                "The target already exists; writing {} instead",
+                file_name(&target)
+            );
+            inner.event(&mut s, id, EventLevel::Info, msg);
         }
     }
     inner.publish();
@@ -134,26 +168,31 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             // 预检也是可以暂停、取消的进程，卡住时由看门狗结束
             let out = run_quiet(inner, id, &ffmpeg, &dry, Some(DRY_RUN_TIMEOUT));
             if cancelled(inner, id) {
-                return stop(inner, id, &temp);
+                return stop(inner, id, &temp, lang);
             }
             match out {
                 Ok(o) if o.success => {
                     let mut s = inner.lock();
-                    let msg = format!("预检通过：{} 以当前参数试编码 3 帧成功", plan.video.encoder.name());
+                    let msg = tr!(
+                        lang,
+                        "预检通过：{} 以当前参数试编码 3 帧成功",
+                        "Pre-check passed: {} encoded 3 test frames with these settings",
+                        plan.video.encoder.name()
+                    );
                     inner.event(&mut s, id, EventLevel::Info, msg);
                 }
                 Ok(o) => {
                     let text = o.stderr.join("\n");
                     let key = match key_line(&text) {
-                        k if k.is_empty() => "预检没有通过（超时或没有输出）".to_string(),
+                        k if k.is_empty() => {
+                            pick(lang, "预检没有通过（超时或没有输出）", "pre-check failed (timed out or no output)")
+                                .into()
+                        }
                         k => k,
                     };
-                    return failed(inner, id, classify(&text), &key, &plan, &media, &caps, 0.0, &temp);
+                    return failed(inner, id, classify(&text), &text, &key, &plan, &media, &caps, 0.0, &temp, lang);
                 }
-                Err(e) => {
-                    let msg = format!("无法启动 ffmpeg（{}）：{e}", ffmpeg.display());
-                    return inner.finish(id, JobStatus::Failed, EventLevel::Error, msg);
-                }
+                Err(e) => return inner.finish(id, JobStatus::Failed, EventLevel::Error, cannot_start(e)),
             }
         }
     }
@@ -164,26 +203,29 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
     if !measures.is_empty() {
         {
             let mut s = inner.lock();
-            inner.event(&mut s, id, EventLevel::Info, format!("测量 {} 条音轨的响度", measures.len()));
+            let msg = tr!(lang, "测量 {} 条音轨的响度", "Measuring loudness of {} audio track(s)", measures.len());
+            inner.event(&mut s, id, EventLevel::Info, msg);
         }
         inner.publish();
         let mut found = Vec::new();
         for (track, cmd) in measures {
             let exit = match run_quiet(inner, id, &ffmpeg, &cmd, None) {
                 Ok(exit) => exit,
-                Err(e) => {
-                    let msg = format!("无法启动 ffmpeg（{}）：{e}", ffmpeg.display());
-                    return inner.finish(id, JobStatus::Failed, EventLevel::Error, msg);
-                }
+                Err(e) => return inner.finish(id, JobStatus::Failed, EventLevel::Error, cannot_start(e)),
             };
             if cancelled(inner, id) {
-                return stop(inner, id, &temp);
+                return stop(inner, id, &temp, lang);
             }
             match exit.success.then(|| parse_measure(&exit.stderr.join("\n"))).flatten() {
                 Some(m) => found.push((track, m)),
                 None => {
                     let mut s = inner.lock();
-                    let msg = format!("第 {} 条音轨的响度测量没有结果，这条音轨按单遍标准化", track + 1);
+                    let msg = tr!(
+                        lang,
+                        "第 {} 条音轨的响度测量没有结果，这条音轨按单遍标准化",
+                        "Loudness measurement of track {} returned nothing; that track uses single-pass normalization",
+                        track + 1
+                    );
                     inner.event(&mut s, id, EventLevel::Warn, msg);
                 }
             }
@@ -198,7 +240,12 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
     // ── 编码 ──
     {
         let mut s = inner.lock();
-        inner.event(&mut s, id, EventLevel::Info, if first.is_some() { "开始两遍编码" } else { "开始转码" });
+        let msg = if first.is_some() {
+            pick(lang, "开始两遍编码", "Two-pass encoding started")
+        } else {
+            pick(lang, "开始转码", "Transcoding started")
+        };
+        inner.event(&mut s, id, EventLevel::Info, msg);
     }
     inner.publish();
     let started = inner.now();
@@ -211,8 +258,7 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             Ok(exit) => exit,
             Err(e) => {
                 files::cleanup(&temp);
-                let msg = format!("无法启动 ffmpeg（{}）：{e}", ffmpeg.display());
-                return inner.finish(id, JobStatus::Failed, EventLevel::Error, msg);
+                return inner.finish(id, JobStatus::Failed, EventLevel::Error, cannot_start(e));
             }
         };
         {
@@ -222,7 +268,7 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             }
         }
         if cancelled(inner, id) {
-            return stop(inner, id, &temp);
+            return stop(inner, id, &temp, lang);
         }
         if !exit.success {
             let text = exit.stderr.join("\n");
@@ -232,10 +278,13 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             };
             let kind = if text.trim().is_empty() { FailureKind::Unknown } else { classify(&text) };
             let key = match key_line(&text) {
-                k if k.is_empty() => format!("退出码 {}", exit.code.map_or("未知".into(), |c| c.to_string())),
+                k if k.is_empty() => {
+                    let code = exit.code.map_or("?".into(), |c| c.to_string());
+                    tr!(lang, "退出码 {}", "exit code {}", code)
+                }
                 k => k,
             };
-            return failed(inner, id, kind, &key, &plan, &media, &caps, elapsed, &temp);
+            return failed(inner, id, kind, &text, &key, &plan, &media, &caps, elapsed, &temp, lang);
         }
     }
 
@@ -250,36 +299,77 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
     let final_path = match files::finalize(&temp, &target, conflict, &busy) {
         Ok(Some(p)) => p,
         Ok(None) => {
-            let msg = "转码期间目标位置出现了同名文件，按设置跳过，临时文件已删除";
+            let msg = pick(
+                lang,
+                "转码期间目标位置出现了同名文件，按设置跳过，临时文件已删除",
+                "A file with the same name appeared during encoding; skipped as configured and the temporary file was deleted",
+            );
             return inner.finish(id, JobStatus::Skipped, EventLevel::Info, msg);
         }
         Err(e) => {
             files::cleanup(&temp);
-            return inner.finish(id, JobStatus::Failed, EventLevel::Error, format!("无法改名为最终文件：{e}"));
+            let msg = tr!(lang, "无法改名为最终文件：{}", "Could not rename to the final file: {}", e);
+            return inner.finish(id, JobStatus::Failed, EventLevel::Error, msg);
         }
     };
     let size = fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
 
     // ── 校验 ──
-    let report = match inner.deps.tools.probe(Path::new(&caps.ffprobe_path), &final_path) {
-        Ok(out) => basic_report(&media, &plan, &out),
+    let ffprobe = PathBuf::from(&caps.ffprobe_path);
+    let mut probe_raw = None;
+    let report = match inner.deps.tools.probe(&ffprobe, &final_path) {
+        Ok(mut out) => {
+            // ffmpeg 写的 MKV 没有 nb_frames：数一遍包。要读完整个文件，所以用可暂停、可取消的进程
+            if let Some(v) = out.video.first_mut().filter(|v| v.frame_count.is_none()) {
+                let mut cmd = vec!["ffprobe".to_string()];
+                cmd.extend(count_frames_args(&final_path, v.index));
+                v.frame_count = run_capture(inner, id, &ffprobe, &cmd, None)
+                    .ok()
+                    .filter(|(exit, _)| exit.success)
+                    .and_then(|(_, stdout)| parse_frame_count(&stdout));
+            }
+            verify::report(&media, &plan, &out, lang)
+        }
         Err(e) => {
+            let (reason, raw) = e.describe(lang);
+            probe_raw = raw;
             vec![ReportItem {
-                label: "读取输出".into(), expected: "能被 ffprobe 分析".into(), actual: e, ok: false
+                label: pick(lang, "读取输出", "Read output").into(),
+                expected: pick(lang, "能被 ffprobe 分析", "readable by ffprobe").into(),
+                actual: reason,
+                ok: false,
             }]
         }
     };
+    // 核对期间点了取消：输出已经写完、改好名，留着它，但任务不算完成，也不触发完成后动作
+    if cancelled(inner, id) {
+        if inner.lock().shutdown {
+            return;
+        }
+        let msg = tr!(
+            lang,
+            "已取消：输出 {} 已经写完，但没有核对",
+            "Cancelled: the output {} was written but not verified",
+            file_name(&final_path)
+        );
+        return inner.finish(id, JobStatus::Cancelled, EventLevel::Warn, msg);
+    }
     let bad: Vec<&str> = report.iter().filter(|r| !r.ok).map(|r| r.label.as_str()).collect();
-    let sizes = format!(
-        "{} → {}（{}）",
-        format_bytes(media.size_bytes),
-        format_bytes(size),
-        format_percent(size as f64 / media.size_bytes.max(1) as f64)
-    );
+    let ratio = format_percent(size as f64 / media.size_bytes.max(1) as f64);
+    let sizes = tr!(lang, "{} → {}（{}）", "{} → {} ({})", format_bytes(media.size_bytes), format_bytes(size), ratio);
     let (level, msg) = if bad.is_empty() {
-        (EventLevel::Info, format!("完成，校验通过：{sizes}"))
+        (EventLevel::Info, tr!(lang, "完成，校验通过：{}", "Done, all checks passed: {}", sizes))
     } else {
-        (EventLevel::Warn, format!("已完成（{sizes}），但 {} 项与预期不符：{}", bad.len(), bad.join("、")))
+        let list = bad.join(pick(lang, "、", ", "));
+        let msg = tr!(
+            lang,
+            "已完成（{}），但 {} 项与预期不符：{}",
+            "Done ({}), but {} item(s) differ from what was expected: {}",
+            sizes,
+            bad.len(),
+            list
+        );
+        (EventLevel::Warn, msg)
     };
     {
         let mut s = inner.lock();
@@ -291,7 +381,7 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
             j.progress.size_bytes = size;
         }
     }
-    inner.finish(id, JobStatus::Done, level, msg);
+    inner.finish_detail(id, JobStatus::Done, level, msg, probe_raw);
 }
 
 /// 跑一遍 ffmpeg，边读边更新进度
@@ -367,7 +457,19 @@ fn run_quiet(
     cmd: &[String],
     timeout: Option<Duration>,
 ) -> std::io::Result<super::process::ProcessExit> {
-    let mut proc = inner.deps.tools.spawn(ffmpeg, &cmd[1..])?;
+    run_capture(inner, id, ffmpeg, cmd, timeout).map(|(exit, _)| exit)
+}
+
+/// 同 [`run_quiet`]，另外留下标准输出的前几行（数帧只输出一行；进度输出不保留，免得长任务占内存）
+fn run_capture(
+    inner: &Inner,
+    id: &str,
+    program: &Path,
+    cmd: &[String],
+    timeout: Option<Duration>,
+) -> std::io::Result<(super::process::ProcessExit, String)> {
+    const KEEP: usize = 8;
+    let mut proc = inner.deps.tools.spawn(program, &cmd[1..])?;
     let done = Arc::new(AtomicBool::new(false));
     if let Some(limit) = timeout {
         let (control, done) = (proc.control(), done.clone());
@@ -392,29 +494,43 @@ fn run_quiet(
         }
         s.controls.insert(id.to_string(), control);
     }
-    while proc.next_line().is_some() {}
+    let mut stdout = Vec::new();
+    while let Some(line) = proc.next_line() {
+        if stdout.len() < KEEP {
+            stdout.push(line);
+        }
+    }
     let exit = proc.wait();
     done.store(true, Ordering::SeqCst);
     inner.lock().controls.remove(id);
-    exit
+    exit.map(|e| (e, stdout.join("\n")))
 }
 
-/// 失败：删掉部分输出，按分类决定重试（回到排队）还是放弃
+/// 失败：删掉部分输出，按分类决定重试（回到排队）还是放弃。`stderr` 用来向用户解释原因，
+/// `key` 是最能说明问题的那一行原文，放进事件的 detail 供展开查看
 #[allow(clippy::too_many_arguments)]
 fn failed(
     inner: &Inner,
     id: &str,
     kind: FailureKind,
+    stderr: &str,
     key: &str,
     plan: &TranscodePlan,
     media: &MediaInfo,
     caps: &Capabilities,
     elapsed: f64,
     temp: &Path,
+    lang: Lang,
 ) {
     files::cleanup(temp);
+    // 软件编码器与原样封装失败不再回退：把原因说清楚
+    if plan.video.action == crate::model::StreamAction::Copy || !plan.video.encoder.is_hardware() {
+        let explained = explain(stderr, lang);
+        let msg = tr!(lang, "{} 失败：{}", "{} failed: {}", plan.video.encoder.name(), explained.sentence(lang));
+        return inner.finish_detail(id, JobStatus::Failed, EventLevel::Error, msg, Some(key.to_string()));
+    }
     let mut tried = inner.lock().tried.remove(id).unwrap_or_default();
-    let recovery = fallback::recover(kind, key, plan, media, caps, &mut tried, elapsed);
+    let recovery = fallback::recover(kind, plan, media, caps, &mut tried, elapsed, lang);
     match recovery {
         Recovery::Retry { plan, message, disable_vendor, delay_ms, serialize_gpu } => {
             {
@@ -428,7 +544,7 @@ fn failed(
                 if delay_ms > 0 {
                     s.not_before.insert(id.to_string(), now + delay_ms);
                 }
-                inner.event(&mut s, id, EventLevel::Warn, message);
+                inner.event_detail(&mut s, id, EventLevel::Warn, message, Some(key.to_string()));
                 if let Some(j) = s.job_mut(id) {
                     j.encoder_used = plan.video.encoder;
                     j.plan = plan;
@@ -443,6 +559,8 @@ fn failed(
             inner.publish();
             inner.wake.notify_all();
         }
-        Recovery::GiveUp { message } => inner.finish(id, JobStatus::Failed, EventLevel::Error, message),
+        Recovery::GiveUp { message } => {
+            inner.finish_detail(id, JobStatus::Failed, EventLevel::Error, message, Some(key.to_string()))
+        }
     }
 }

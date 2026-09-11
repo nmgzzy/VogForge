@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notify: true,
   language: "zh-CN",
   theme: "system",
+  onboarded: false,
 };
 
 function currentPlatform(): Platform {

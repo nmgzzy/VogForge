@@ -6,7 +6,8 @@ use std::path::Path;
 
 use crate::model::{
     ArgSegment, AudioStream, Capabilities, Container, DoviAction, EncoderId, EnvStatus, FpsPolicy, HdrAction,
-    MediaInfo, RateControl, ResolutionPreset, StreamAction, SubtitleMode, ToneMapPipeline, TranscodePlan, VideoStream,
+    MediaInfo, Platform, RateControl, ResolutionPreset, SegmentKind, StreamAction, SubtitleMode, ToneMapPipeline,
+    TranscodePlan, VideoStream,
 };
 
 use super::encoders::{Family, supports_rate_control};
@@ -58,9 +59,11 @@ pub fn downmix_filter(src: &AudioStream) -> String {
     format!("pan=stereo|{expr},alimiter=limit=0.97:level=false")
 }
 
-/// 硬件解码参数。一律用 `-hwaccel auto`：解码后的帧自动下载到内存，软件滤镜与各家编码器都能接。
+/// 硬件解码参数：解码后的帧自动下载到内存，软件滤镜与各家编码器都能接。Windows 上有 D3D11 设备时写
+/// `-hwaccel d3d11va`，其余写 `-hwaccel auto`。auto 在 Windows 上先试 DXVA2（D3D9），会话断开（远程桌面断开、
+/// 无人值守过夜）时 D3D9 建不了设备，ffmpeg 9.0.1 直接崩溃而不是回退软解；D3D11 在同样情况下正常。
 /// 不能按编码器写 `-hwaccel qsv`：9.0 起它默认把帧留在 GPU 上，后面再要求 `-pix_fmt p010le` 会转换失败
-/// （技术事实文档 7.5 节，阶段 4 实测）
+/// （技术事实文档 7.5 节）
 fn hwaccel_for(plan: &TranscodePlan, media: &MediaInfo, caps: &Capabilities) -> Vec<String> {
     let vp = &plan.video;
     // 探测完成后没有任何硬解方式（构建不带，或设置里关了硬件解码）就不写
@@ -71,7 +74,8 @@ fn hwaccel_for(plan: &TranscodePlan, media: &MediaInfo, caps: &Capabilities) -> 
     if vp.dovi == DoviAction::Preserve || media.video.first().is_some_and(|v| v.hdr10plus) {
         return Vec::new();
     }
-    strings(&["-hwaccel", "auto"])
+    let d3d11 = caps.platform == Platform::Windows && caps.device_available("d3d11va");
+    strings(&["-hwaccel", if d3d11 { "d3d11va" } else { "auto" }])
 }
 
 /// 转固定帧率时补齐视频尾部：源里视频比音频短半帧以上时，把最后一帧延长到音频结束。
@@ -358,8 +362,8 @@ pub fn split_args(input: &str) -> Vec<String> {
     out
 }
 
-fn seg(label: &str, args: Vec<String>) -> ArgSegment {
-    ArgSegment { label: label.to_string(), args }
+fn seg(kind: SegmentKind, args: Vec<String>) -> ArgSegment {
+    ArgSegment { kind, args }
 }
 
 /// 两遍编码的统计文件前缀：放在输出文件旁，ffmpeg 实际写 `<前缀>-<输出流序号>.log`（x265 另有 `.cutree`）
@@ -407,7 +411,7 @@ fn head_segments(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities, f
     let mut input = filters.hwaccel.clone().unwrap_or_else(|| hwaccel_for(plan, media, caps));
     input.extend(filters.pre.iter().cloned());
     input.extend(["-i".to_string(), media.path.clone()]);
-    vec![seg("全局", global), seg("输入", input)]
+    vec![seg(SegmentKind::Global, global), seg(SegmentKind::Input, input)]
 }
 
 /// 视频编码、滤镜、帧率三段；`pass` 是两遍编码的第几遍
@@ -421,17 +425,17 @@ fn video_segments(
     if let Some((n, prefix)) = pass {
         video.extend(["-pass".to_string(), n.to_string(), "-passlogfile".to_string(), prefix.to_string()]);
     }
-    let mut segs = vec![seg("视频", video)];
+    let mut segs = vec![seg(SegmentKind::Video, video)];
     if let Some(vf) = &filters.vf {
-        segs.push(seg("滤镜", vec!["-vf".into(), vf.clone()]));
+        segs.push(seg(SegmentKind::Filter, vec!["-vf".into(), vf.clone()]));
     }
     // 实测：fps 滤镜会丢最后一帧，-vsync 在 9.0 已移除，唯一正确写法是 -fps_mode:v cfr 加 -r
     match plan.video.fps {
         FpsPolicy::Cfr { fps } => {
-            segs.push(seg("帧率", vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(fps)]))
+            segs.push(seg(SegmentKind::Fps, vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(fps)]))
         }
         FpsPolicy::Cap { max } if v.fps_nominal > max => {
-            segs.push(seg("帧率", vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(max)]));
+            segs.push(seg(SegmentKind::Fps, vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(max)]));
         }
         _ => {}
     }
@@ -449,10 +453,10 @@ pub fn build_first_pass(
     let filters = prepared_filters(media, plan);
     let prefix = passlog_prefix(output);
     let mut segs = head_segments(media, plan, caps, &filters);
-    segs.push(seg("映射", vec!["-map".into(), format!("0:{}", v.index)]));
+    segs.push(seg(SegmentKind::Map, vec!["-map".into(), format!("0:{}", v.index)]));
     segs.extend(video_segments(v, plan, &filters, Some((1, &prefix))));
-    segs.push(seg("封装", strings(&["-f", "null"])));
-    segs.push(seg("输出", strings(&["-"])));
+    segs.push(seg(SegmentKind::Mux, strings(&["-f", "null"])));
+    segs.push(seg(SegmentKind::Output, strings(&["-"])));
     Some(segs)
 }
 
@@ -512,7 +516,7 @@ pub fn build_arg_segments_measured(
         map.extend(strings(&["-map_chapters", "0"]));
     }
     map.extend(strings(&["-map_metadata", "0"]));
-    segs.push(seg("映射", map));
+    segs.push(seg(SegmentKind::Map, map));
 
     // 视频
     match v {
@@ -520,7 +524,7 @@ pub fn build_arg_segments_measured(
             let prefix = passlog_prefix(output);
             segs.extend(video_segments(v, plan, &filters, two_pass(plan).then_some((2, prefix.as_str()))));
         }
-        _ => segs.push(seg("视频", strings(&["-c:v", "copy"]))),
+        _ => segs.push(seg(SegmentKind::Video, strings(&["-c:v", "copy"]))),
     }
 
     // 音频
@@ -561,7 +565,7 @@ pub fn build_arg_segments_measured(
         }
     }
     if !audio.is_empty() {
-        segs.push(seg("音频", audio));
+        segs.push(seg(SegmentKind::Audio, audio));
     }
 
     // 字幕
@@ -572,7 +576,7 @@ pub fn build_arg_segments_measured(
     };
     if has_subs {
         segs.push(seg(
-            "字幕",
+            SegmentKind::Subtitle,
             vec!["-c:s".into(), if plan.container == Container::Mkv { "copy" } else { "mov_text" }.into()],
         ));
     }
@@ -600,9 +604,9 @@ pub fn build_arg_segments_measured(
     }
     // 实际写入 .vidforge-part 临时文件，扩展名无法推断格式，必须显式 -f
     mux.extend(["-f".to_string(), plan.container.muxer().to_string()]);
-    segs.push(seg("封装", mux));
+    segs.push(seg(SegmentKind::Mux, mux));
 
-    segs.push(seg("输出", vec![output.to_string_lossy().to_string()]));
+    segs.push(seg(SegmentKind::Output, vec![output.to_string_lossy().to_string()]));
     segs
 }
 

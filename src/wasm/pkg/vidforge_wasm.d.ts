@@ -18,6 +18,11 @@ export function engine_meta(): string;
  */
 export function evaluate(media: string, plan: string, caps: string, settings: string, date: string): string;
 
+/**
+ * 把能力里由结构化字段决定的说明换成指定语言。桌面端由后端直接按语言返回，浏览器预览的示例能力靠它切换
+ */
+export function localize_caps(caps: string, lang: string): string;
+
 export function recommend_plan(media: string, scenario_id: string, caps: string): string;
 
 /**
@@ -40,6 +45,7 @@ export interface InitOutput {
     readonly effective_caps: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly engine_meta: () => [number, number, number, number];
     readonly evaluate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
+    readonly localize_caps: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly recommend_plan: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly suggest_scenario: (a: number, b: number) => [number, number, number, number];
     readonly update_plan: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];

@@ -1,0 +1,75 @@
+# 持续集成：前端检查在 Linux 上跑；Rust 核心库、WASM 与 Tauri 外壳在 Windows 与 macOS 上各跑一遍，
+# 并装上真实 ffmpeg 跑集成测试（macOS 用 Homebrew 版，正好覆盖"缺色调映射管线"的降级路径）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: 前端（类型检查 + vitest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  rust:
+    name: Rust（${{ matrix.os }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装 ffmpeg（macOS：Homebrew）
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg
+          echo "VIDFORGE_TEST_FFMPEG=$(brew --prefix)/bin" >> "$GITHUB_ENV"
+      - name: 安装 ffmpeg（Windows：BtbN gpl）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -OutFile $zip
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
+          "VIDFORGE_TEST_FFMPEG=$env:RUNNER_TEMP\ffmpeg\ffmpeg-master-latest-win64-gpl\bin" >> $env:GITHUB_ENV
+
+      # Tauri 外壳编译时要读取前端构建产物（tauri.conf.json 的 frontendDist）
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build -p vidforge-wasm --target wasm32-unknown-unknown --release

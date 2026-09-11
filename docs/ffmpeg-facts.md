@@ -551,7 +551,9 @@ ffmpeg 会打印 `Using the %s ratecontrol method`。解析这行可确认实际
 
 **`-hwaccel qsv` 在 9.0 会把帧留在 GPU 上 [实测]**（阶段 4 真实转码时发现）。只写 `-hwaccel qsv` 不写输出格式时，ffmpeg 打印 `WARNING: defaulting hwaccel_output_format to qsv for compatibility with old commandlines`，帧以 QSV 表面形式留在显存；后面再要求 `-pix_fmt p010le` 就报 `Impossible to convert between the formats supported by the filter` 并失败。上面"硬解 + 软编"那条写法对 qsv 不成立。
 
-**实现要求**：硬解一律写 `-hwaccel auto`。实测 `-hwaccel auto` 解码后帧自动下载到内存，接软件滤镜、libx265、hevc_qsv 都正常，而且 HDR10 的帧级 MDCV / CLL side data 仍在（libx265 自动透传后输出的 1000 nits 元数据完整）。要做零拷贝的全硬件流水，必须同时写 `-hwaccel_output_format` 并改用 `scale_qsv` / `vpp_qsv` 这类硬件滤镜，v1 不做。
+**Windows 会话断开时 `-hwaccel auto` 会让 ffmpeg 崩溃 [实测]**（阶段 7，远程桌面断开后的开发机）。auto 在 Windows 上按 `dxva2` 在前的顺序尝试，会话断开时 D3D9 建不了设备（`[DXVA2] Failed to create Direct3D device`），ffmpeg 9.0.1 随即段错误退出（Git Bash 下退出码 139），而不是回退到软解。同样的会话里 `-hwaccel d3d11va` 正常：解码后帧自动下载到内存，接 libx265 与 hevc_qsv 都正常，HDR10 的 MDCV / CLL 仍在（1000 nits）；遇到 D3D11VA 解不了的编码（MPEG-4 Part 2）自动改用软解。同一状态下 `-init_hw_device qsv=d` 也失败（`Error creating a MFX session: -9`），但 QSV 编码器自己建会话，照样能编码。无人值守过夜跑队列正是这种场景。
+
+**实现要求**：Windows 上有 D3D11 设备（探测第 2 层 `d3d11va` 可用）时硬解写 `-hwaccel d3d11va`，其余平台写 `-hwaccel auto`。`auto` 与 `d3d11va` 解码后帧都自动下载到内存，接软件滤镜、libx265、hevc_qsv 都正常，HDR10 的帧级 MDCV / CLL side data 仍在。要做零拷贝的全硬件流水，必须同时写 `-hwaccel_output_format` 并改用 `scale_qsv` / `vpp_qsv` 这类硬件滤镜，v1 不做。
 
 ### 7.6 探测实现中踩到的坑
 
@@ -747,8 +749,21 @@ MOV 与 MP4 同属一族，音频白名单不同：AAC / AC-3 / E-AC-3 / ALAC / 
 
 以下均为 **[实测]**，Windows 11，ffmpeg 9.0.1。
 
-**应用被强杀时 ffmpeg 不会跟着退出。** Windows 上结束父进程不影响子进程：用任务管理器或 `taskkill /F` 结束应用后，正在转码的 ffmpeg 继续运行、继续写临时文件，下次启动恢复队列时还可能因为文件被占用而删不掉。解决办法是把每个 ffmpeg 放进一个设置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象：应用退出、崩溃或被强杀时系统关闭作业句柄，其中的进程随之结束。实测强杀应用后 ffmpeg 立即消失。Linux 用 `prctl(PR_SET_PDEATHSIG, SIGKILL)`；macOS 没有对应机制，要另想办法（阶段 7）。
+**应用被强杀时 ffmpeg 不会跟着退出。** Windows 上结束父进程不影响子进程：用任务管理器或 `taskkill /F` 结束应用后，正在转码的 ffmpeg 继续运行、继续写临时文件，下次启动恢复队列时还可能因为文件被占用而删不掉。解决办法是把每个 ffmpeg 放进一个设置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象：应用退出、崩溃或被强杀时系统关闭作业句柄，其中的进程随之结束。实测强杀应用后 ffmpeg 立即消失。Linux 用 `prctl(PR_SET_PDEATHSIG, SIGKILL)`。macOS 没有对应机制，给每个 ffmpeg 起一个 sh 看门狗（每秒 `kill -0` 父进程，父进程没了就 `kill -9` ffmpeg），由单元测试在 macOS CI 上验证；应用被强杀时 ffmpeg 最多多跑一秒。
 
 **暂停可以用挂起线程实现。** ffmpeg 没有暂停命令（`-nostdin` 下也不能发 `q`）。逐个 `SuspendThread` 挂起进程的全部线程后，`-progress` 输出停止、编码不再推进；`ResumeThread` 后接着跑，输出正常。类 Unix 用 `SIGSTOP` / `SIGCONT`。挂起的进程仍占着内存与 GPU 会话，所以暂停的任务照样占并发票。
 
 **取消直接结束进程即可。** 输出写在 `.vidforge-part` 临时文件里，结束进程后删掉它（和两遍编码的 `.2pass-*.log` 统计文件）就不留痕迹；挂起中的进程也能直接结束。
+
+## 14. 报错原文（阶段 7 实测）
+
+以下均为 **[实测]**，ffmpeg 9.0.1。界面的报错说明（设计文档 4.10 节）按这些子串匹配，匹配不区分大小写。
+
+| 场景 | stderr 里最能说明问题的一行 | 退出码 |
+|---|---|---|
+| MP4 被截断（只剩前 20 KB），ffprobe 分析 | `[mov,mp4,m4a,3gp,3g2,mj2 @ …] moov atom not found` | 1 |
+| 附加参数写错选项名 | `Unrecognized option 'bogus_option'.`（随后是 `Error splitting the argument list: Option not found`） | 8，编码前就退出 |
+| NVENC 没有设备 | `[h264_nvenc @ …] Cannot load nvcuda.dll` | 非 0 |
+| AMF 没有设备 | `[AMF @ …] DLL amfrt64.dll failed to open` | 非 0 |
+
+"最能说明问题的一行"由 `classify::key_line` 从 stderr 里挑，界面把它放在可展开的"查看原文"里；说明正文按规则表生成，不直接显示这一行。

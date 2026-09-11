@@ -1,4 +1,5 @@
-/** 界面展示用的格式化函数。全部为纯函数，便于测试。 */
+/** 界面展示用的格式化函数。除按界面语言取词外都是纯函数，便于测试。 */
+import { tr } from "@/i18n";
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -23,21 +24,28 @@ export function formatDuration(totalSec: number): string {
 
 /** 剩余时间用更口语的形式：「约 3 分钟」 */
 export function formatEta(sec: number | undefined): string {
-  if (sec === undefined || !Number.isFinite(sec)) return "计算中";
-  if (sec < 60) return `约 ${Math.max(1, Math.round(sec))} 秒`;
-  if (sec < 3600) return `约 ${Math.round(sec / 60)} 分钟`;
+  if (sec === undefined || !Number.isFinite(sec)) return tr("计算中", "calculating");
+  if (sec < 60) {
+    const s = Math.max(1, Math.round(sec));
+    return tr(`约 ${s} 秒`, `about ${s} s`);
+  }
+  if (sec < 3600) {
+    const m = Math.round(sec / 60);
+    return tr(`约 ${m} 分钟`, `about ${m} min`);
+  }
   const h = Math.floor(sec / 3600);
   const m = Math.round((sec % 3600) / 60);
-  return m > 0 ? `约 ${h} 小时 ${m} 分` : `约 ${h} 小时`;
+  return m > 0 ? tr(`约 ${h} 小时 ${m} 分`, `about ${h} h ${m} min`) : tr(`约 ${h} 小时`, `about ${h} h`);
 }
 
 /** 耗时区间用口语化单位，两端同单位时合并：「4–8 分钟」「10.1–18.9 小时」 */
 export function formatTimeRange(a: number, b: number): string {
-  const unit = (s: number) => (s < 60 ? "秒" : s < 3600 ? "分钟" : "小时");
+  const unit = (s: number) => (s < 60 ? tr("秒", "s") : s < 3600 ? tr("分钟", "min") : tr("小时", "h"));
   const val = (s: number) =>
     s < 60 ? Math.max(1, Math.round(s)) : s < 3600 ? Math.max(1, Math.round(s / 60)) : Math.round(s / 360) / 10;
   const ua = unit(a);
   const ub = unit(b);
+  if (ua === ub && val(a) === val(b)) return `${val(b)} ${ub}`;
   return ua === ub ? `${val(a)}–${val(b)} ${ub}` : `${val(a)} ${ua} – ${val(b)} ${ub}`;
 }
 
@@ -70,9 +78,9 @@ export function channelLabel(channels: number, layout?: string): string {
   if (layout && /5\.1/.test(layout)) return "5.1";
   if (channels === 8) return "7.1";
   if (channels === 6) return "5.1";
-  if (channels === 2) return "立体声";
-  if (channels === 1) return "单声道";
-  return `${channels} 声道`;
+  if (channels === 2) return tr("立体声", "stereo");
+  if (channels === 1) return tr("单声道", "mono");
+  return tr(`${channels} 声道`, `${channels} ch`);
 }
 
 export function formatPercent(ratio: number): string {

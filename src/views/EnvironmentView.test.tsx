@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import type { Capabilities } from "@/lib/types";
 import { MOCK_CAPABILITIES } from "@/mock/capabilities";
 import { useCapabilities } from "@/stores/capability";
-import { ENV_STATUS, Sidebar } from "@/components/Sidebar";
+import { envStatus, Sidebar } from "@/components/Sidebar";
 import { downloadUrl, EnvironmentView } from "./EnvironmentView";
 
 const withCaps = (caps: Capabilities) => useCapabilities.setState({ caps, probing: false, error: undefined });
@@ -37,7 +37,10 @@ describe("环境页", () => {
     render(<EnvironmentView />);
     const alert = screen.getByRole("alert");
     expect(within(alert).getByText("没有找到 ffmpeg")).toBeInTheDocument();
-    expect(within(alert).getByRole("button", { name: /下载推荐构建/ })).toBeInTheDocument();
+    // 引导下载：按平台列出推荐构建与安装步骤（需求 F-8.3）
+    expect(within(alert).getByRole("button", { name: /下载 gyan.dev full/ })).toBeInTheDocument();
+    expect(within(alert).getByRole("button", { name: /下载 BtbN gpl/ })).toBeInTheDocument();
+    expect(within(alert).getByTestId("ffmpeg-guide")).toBeInTheDocument();
     expect(within(alert).getByText("查找过的位置（2）")).toBeInTheDocument();
     expect(screen.queryByText("硬件编码能力")).toBeNull();
   });
@@ -83,10 +86,10 @@ describe("侧栏环境状态", () => {
   });
 
   it("每种状态都有文案，异常状态不闪烁", () => {
-    expect(ENV_STATUS.ready.pulse).toBe(true);
+    expect(envStatus("ready").pulse).toBe(true);
     for (const s of ["missing", "too_old", "broken"] as const) {
-      expect(ENV_STATUS[s].pulse).toBe(false);
-      expect(ENV_STATUS[s].hint).not.toBe("");
+      expect(envStatus(s).pulse).toBe(false);
+      expect(envStatus(s).hint).not.toBe("");
     }
   });
 });

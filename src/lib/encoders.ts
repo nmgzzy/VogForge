@@ -2,18 +2,20 @@
  * 编码器相关的界面文案与查询。数值规则（质量刻度、preset、码率控制支持）来自引擎的规则表，
  * 这里只放显示用的名字和对环境能力的简单查询。
  */
+import { tr } from "@/i18n";
 import type { Capabilities, Codec, EncoderId, QualityTier, Vendor } from "./types";
 import { encoderMeta } from "./engine";
 
 export const CODEC_LABEL: Record<Codec, string> = { h264: "H.264", hevc: "HEVC", av1: "AV1" };
 
-export const VENDOR_LABEL: Record<Vendor, string> = {
-  software: "CPU 软编",
+const VENDOR_NAMES: Record<Exclude<Vendor, "software">, string> = {
   intel: "Intel QSV",
   nvidia: "NVIDIA NVENC",
   amd: "AMD AMF",
   apple: "Apple VideoToolbox",
 };
+
+export const vendorLabel = (v: Vendor): string => (v === "software" ? tr("CPU 软编", "CPU (software)") : VENDOR_NAMES[v]);
 
 export const encoderVendor = (id: EncoderId): Vendor => encoderMeta(id).vendor;
 

@@ -4,10 +4,11 @@
 
 use std::path::Path;
 
+use vidforge_core::i18n::Lang;
 use vidforge_core::model::{
     AudioCodec, AudioMode, Capabilities, Codec, Container, Decision, DoviAction, EncoderId, EncoderProbe, EnvStatus,
     FailureKind, FidelityKind, FidelityState, FpsPolicy, HdrAction, MediaInfo, PlanResult, Platform, RateControl,
-    ResolutionPreset, Scenario, Severity, StreamAction, ToneMapPipeline, TranscodePlan, Vendor,
+    ResolutionPreset, Scenario, SegmentKind, Severity, StreamAction, ToneMapPipeline, TranscodePlan, Vendor,
 };
 use vidforge_core::pipeline::args::{Dimensions, build_first_pass, downmix_filter, tail_pad, target_dimensions};
 use vidforge_core::pipeline::encoders::{EncoderNeeds, pick_encoder, quality_value};
@@ -81,7 +82,7 @@ fn without(ids: &[EncoderId]) -> Capabilities {
 }
 
 fn eval(m: &MediaInfo, p: &TranscodePlan, c: &Capabilities) -> PlanResult {
-    evaluate(m, p, c, Path::new(OUT))
+    evaluate(m, p, c, Path::new(OUT), Lang::ZhCn)
 }
 
 fn run_with(m: &MediaInfo, s: Scenario, c: &Capabilities) -> PlanResult {
@@ -108,12 +109,12 @@ fn reason(r: &PlanResult, field: &str) -> String {
     decision(r, field).map(|d| d.reason.clone()).unwrap_or_default()
 }
 
-fn segment(r: &PlanResult, label: &str) -> String {
-    r.segments.iter().find(|s| s.label == label).map(|s| s.args.join(" ")).unwrap_or_default()
+fn segment(r: &PlanResult, kind: SegmentKind) -> String {
+    r.segments.iter().find(|s| s.kind == kind).map(|s| s.args.join(" ")).unwrap_or_default()
 }
 
 fn vf(r: &PlanResult) -> String {
-    r.segments.iter().find(|s| s.label == "滤镜").map(|s| s.args[1].clone()).unwrap_or_default()
+    r.segments.iter().find(|s| s.kind == SegmentKind::Filter).map(|s| s.args[1].clone()).unwrap_or_default()
 }
 
 // ───────────────── iPhone 杜比视界 8.4 ─────────────────
@@ -701,7 +702,7 @@ fn bitrate_mode_arguments_per_encoder() {
     let video = |enc| {
         let r = eval(&m, &rc_plan(&m, enc, rc, &c), &c);
         assert_eq!(r.plan.video.rate_control, rc, "{enc:?}");
-        segment(&r, "视频")
+        segment(&r, SegmentKind::Video)
     };
     for enc in [EncoderId::Libx265, EncoderId::Libx264, EncoderId::HevcQsv] {
         let v = video(enc);
@@ -724,15 +725,15 @@ fn capped_quality_arguments_per_encoder() {
     let rc = RateControl::Capped { kbps: 8000 };
     let r = |enc| eval(&m, &rc_plan(&m, enc, rc, &c), &c);
     let q = |enc| quality_value(enc, recommend_plan(&m, Scenario::Archive, &c).video.quality);
-    let x265 = segment(&r(EncoderId::Libx265), "视频");
+    let x265 = segment(&r(EncoderId::Libx265), SegmentKind::Video);
     // x265 只给 maxrate 不给 bufsize 会静默忽略上限（实测）
     let want = format!("-crf {} -maxrate 8000k -bufsize 16000k", q(EncoderId::Libx265));
     assert!(x265.contains(&want), "{x265}");
     // QSV 只给 global_quality + maxrate 会静默落到 CQP，必须带目标码率走 QVBR，且目标 < 峰值（相等会变 CBR）
-    let qsv = segment(&r(EncoderId::HevcQsv), "视频");
+    let qsv = segment(&r(EncoderId::HevcQsv), SegmentKind::Video);
     let want = format!("-global_quality {} -b:v 5333k -maxrate 8000k -bufsize 16000k", q(EncoderId::HevcQsv));
     assert!(qsv.contains(&want), "{qsv}");
-    let nvenc = segment(&r(EncoderId::HevcNvenc), "视频");
+    let nvenc = segment(&r(EncoderId::HevcNvenc), SegmentKind::Video);
     let want = format!("-rc vbr -b:v 0 -cq {} -maxrate 8000k -bufsize 16000k", q(EncoderId::HevcNvenc));
     assert!(nvenc.contains(&want), "{nvenc}");
     // 做不到"质量 + 峰值"的编码器换成峰值 1.5 倍对应的目标码率
@@ -781,9 +782,9 @@ fn two_pass_commands_share_everything_but_the_pass_number() {
             assert!(!first.iter().any(|a| a.starts_with("-c:a") || a.starts_with("-c:s")));
             // 两遍必须看到完全相同的帧：输入、编码参数、滤镜、帧率逐段一致
             let segs = build_first_pass(&m, &p, &c, Path::new(OUT)).unwrap();
-            for label in ["输入", "视频", "滤镜", "帧率"] {
-                let a = segs.iter().find(|x| x.label == label).map(|x| x.args.join(" ")).unwrap_or_default();
-                assert_eq!(a.replace("-pass 1", "-pass 2"), segment(&r, label), "{id}/{enc:?} 的「{label}」两遍不一致");
+            for kind in [SegmentKind::Input, SegmentKind::Video, SegmentKind::Filter, SegmentKind::Fps] {
+                let a = segs.iter().find(|x| x.kind == kind).map(|x| x.args.join(" ")).unwrap_or_default();
+                assert_eq!(a.replace("-pass 1", "-pass 2"), segment(&r, kind), "{id}/{enc:?} 的 {kind:?} 段两遍不一致");
             }
         }
     }
@@ -904,4 +905,65 @@ fn loudness_normalization_is_explained_and_only_touches_encoded_tracks() {
     assert_eq!(r.loudness_measure.as_ref().map(Vec::len), Some(2));
     // 默认不开
     assert!(!recommend_plan(&m, Scenario::Mobile, &c).loudnorm);
+}
+
+// ───────────────── 界面语言 ─────────────────
+
+/// 英文界面下引擎产出的说明里不能残留中文（素材自带的音轨、字幕标题与文件名除外）
+#[test]
+fn english_output_has_no_chinese_left() {
+    let han = |t: &str| t.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c) || "，。；：（）「」、".contains(c));
+    let variants = [caps(), mac(), with_tonemap(&[]), without(&[EncoderId::Libx265, EncoderId::Libsvtav1])];
+    let mut checked = 0;
+    for m in samples() {
+        let own: Vec<String> = m
+            .audio
+            .iter()
+            .filter_map(|a| a.title.clone())
+            .chain(m.subtitle.iter().filter_map(|s| s.title.clone()))
+            .collect();
+        let clean = |t: &str| own.iter().fold(t.to_string(), |acc, o| acc.replace(o.as_str(), ""));
+        for c in &variants {
+            for s in ALL {
+                let mut plans = vec![recommend_plan(&m, s, c)];
+                // 每个一键修正之后的状态也要检查
+                let first = evaluate(&m, &plans[0], c, Path::new(OUT), Lang::En);
+                for f in first.fidelity.iter().flat_map(|f| f.fixes.iter()) {
+                    plans.push(apply_fix_to_plan(plans[0].clone(), &f.id, &m, c));
+                }
+                for p in &plans {
+                    let r = evaluate(&m, p, c, Path::new(OUT), Lang::En);
+                    let zh = evaluate(&m, p, c, Path::new(OUT), Lang::ZhCn);
+                    assert_eq!(r.decisions.len(), zh.decisions.len(), "两种语言的决策条数应一致");
+                    for d in &r.decisions {
+                        for t in [&d.field, &d.value, &d.reason] {
+                            assert!(!han(&clean(t)), "{} / {s:?}：决策「{t}」", m.id);
+                        }
+                    }
+                    for f in &r.fidelity {
+                        assert!(!han(&f.label) && !han(&clean(&f.detail)), "{} / {s:?}：保真度 {f:?}", m.id);
+                        assert!(f.fixes.iter().all(|x| !han(&x.label)), "{} / {s:?}：修正 {f:?}", m.id);
+                    }
+                    if let Some(w) = &r.not_worth_it {
+                        assert!(!han(w), "{} / {s:?}：{w}", m.id);
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "只检查了 {checked} 个组合");
+}
+
+#[test]
+fn english_decisions_read_naturally() {
+    let m = media("m-iphone");
+    let c = caps();
+    let p = apply_fix_to_plan(recommend_plan(&m, Scenario::Archive, &c), "dovi_preserve", &m, &c);
+    let r = evaluate(&m, &p, &c, Path::new(OUT), Lang::En);
+    let dv = r.decisions.iter().find(|d| d.field == "Dolby Vision").expect("有杜比视界的决策");
+    assert_eq!(dv.value, "Keep Profile 8.4");
+    let item = r.fidelity.iter().find(|f| f.kind == FidelityKind::DolbyVision).unwrap();
+    assert_eq!(item.label, "Dolby Vision");
+    assert!(item.detail.starts_with("Keeps Profile 8.4."), "{}", item.detail);
 }

@@ -2,12 +2,14 @@
 //!
 //! 纯函数：输入失败分类、当前计划与能力，输出下一步。调度器负责执行并把原因写进任务日志。
 
+use crate::i18n::Lang;
 use crate::model::{
     Capabilities, Codec, EncoderId, FailureKind, HdrAction, HdrKind, MediaInfo, Platform, StreamAction, TranscodePlan,
     Vendor,
 };
 use crate::pipeline::encoders::{supports_10bit, writes_hdr10};
 use crate::pipeline::strategy::switch_encoder;
+use crate::tr;
 
 /// 运行这么久之后才失败，输出可能已写入大量数据：不再逐个试硬件编码器，直接软编从头重跑
 pub const LATE_FAILURE_SEC: f64 = 10.0;
@@ -73,44 +75,55 @@ fn retry(plan: TranscodePlan, message: String) -> Recovery {
     Recovery::Retry { plan, message, disable_vendor: None, delay_ms: 0, serialize_gpu: false }
 }
 
-/// 决定失败后的下一步。`key` 是 stderr 里最能说明问题的一行，`elapsed_sec` 是这次运行了多久
+/// 决定失败后的下一步（只处理硬件编码器；软件编码器与原样封装失败由调用方直接报错）。
+/// `elapsed_sec` 是这次运行了多久；给用户的说明按 `lang` 生成，ffmpeg 原文由调用方另外附上
 pub fn recover(
     kind: FailureKind,
-    key: &str,
     plan: &TranscodePlan,
     media: &MediaInfo,
     caps: &Capabilities,
     tried: &mut Tried,
     elapsed_sec: f64,
+    lang: Lang,
 ) -> Recovery {
     let enc = plan.video.encoder;
     let name = enc.name();
     if plan.video.action == StreamAction::Copy || !enc.is_hardware() {
-        return Recovery::GiveUp { message: format!("{name} 失败：{key}") };
+        return Recovery::GiveUp { message: tr!(lang, "{} 失败", "{} failed", name) };
     }
     let software = EncoderId::software_for(plan.video.codec);
     let to_software = |why: String| {
         if caps.encoder_usable(software) {
-            retry(
-                switch_encoder(plan.clone(), software, media, caps),
-                format!("{why}，回退到软件编码 {}", software.name()),
-            )
+            let message =
+                tr!(lang, "{}，回退到软件编码 {}", "{}; falling back to software encoder {}", why, software.name());
+            retry(switch_encoder(plan.clone(), software, media, caps), message)
         } else {
-            Recovery::GiveUp { message: format!("{why}，当前 ffmpeg 也没有可用的 {}", software.name()) }
+            let message = tr!(
+                lang,
+                "{}，当前 ffmpeg 也没有可用的 {}",
+                "{}, and this ffmpeg has no usable {} either",
+                why,
+                software.name()
+            );
+            Recovery::GiveUp { message }
         }
     };
 
     if elapsed_sec > LATE_FAILURE_SEC {
         // 不静默回退：已写入的部分输出由调度器删除，这里明确说明从头重跑
-        return to_software(format!(
-            "{name} 运行 {} 秒后失败（{key}），已删除部分输出，从头重跑",
-            elapsed_sec.round() as u64
+        let secs = elapsed_sec.round() as u64;
+        return to_software(tr!(
+            lang,
+            "{} 运行 {} 秒后失败，已删除部分输出，从头重跑",
+            "{} failed after {} s; the partial output was deleted and the job starts over",
+            name,
+            secs
         ));
     }
 
     let switch_to = |next: EncoderId, why: String, disable: Option<Vendor>| Recovery::Retry {
         plan: switch_encoder(plan.clone(), next, media, caps),
-        message: format!("{why}，回退到 {}", next.name()),
+        message: tr!(lang, "{}，回退到 {}", "{}; falling back to {}", why, next.name()),
         disable_vendor: disable,
         delay_ms: 0,
         serialize_gpu: false,
@@ -119,42 +132,71 @@ pub fn recover(
         let skip: Vec<Vendor> = disable.into_iter().collect();
         match next_encoder(enc, plan, media, caps, &skip) {
             Some(next) => switch_to(next, why, disable),
-            None => Recovery::GiveUp { message: format!("{why}，没有其他可用的编码器") },
+            None => Recovery::GiveUp {
+                message: tr!(lang, "{}，没有其他可用的编码器", "{}, and no other encoder is available", why),
+            },
         }
     };
 
     match kind {
         FailureKind::DeviceMissing => {
             let vendor = enc.vendor();
-            next_or_give_up(format!("{name} 的设备不可用（{key}），本次运行不再使用 {}", vendor.label()), Some(vendor))
+            let why = tr!(
+                lang,
+                "{} 的设备不可用，本次运行不再使用 {}",
+                "{}: the device is unavailable, {} is disabled for this session",
+                name,
+                vendor.label()
+            );
+            next_or_give_up(why, Some(vendor))
         }
         FailureKind::Capability if plan.video.bit_depth == 10 && !tried.to_8bit => {
             tried.to_8bit = true;
             let mut p = plan.clone();
             p.video.bit_depth = 8;
-            retry(p, format!("{name} 不支持这组 10bit 参数（{key}），降为 8bit 重试"))
+            let message = tr!(
+                lang,
+                "{} 不支持这组 10bit 参数，降为 8bit 重试",
+                "{} does not support these 10-bit settings; retrying in 8-bit",
+                name
+            );
+            retry(p, message)
         }
-        FailureKind::Capability => next_or_give_up(format!("{name} 不支持这组参数（{key}）"), None),
+        FailureKind::Capability => {
+            next_or_give_up(tr!(lang, "{} 不支持这组参数", "{} does not support these settings", name), None)
+        }
         FailureKind::Param if plan.video.extra_args.is_some() && !tried.without_extra_args => {
             tried.without_extra_args = true;
             let mut p = plan.clone();
             p.video.extra_args = None;
-            retry(p, format!("{name} 不接受这组参数（{key}），去掉附加参数重试"))
+            let message = tr!(
+                lang,
+                "{} 不接受这组参数，去掉附加参数重试",
+                "{} rejected the settings; retrying without the extra arguments",
+                name
+            );
+            retry(p, message)
         }
-        FailureKind::Param => next_or_give_up(format!("{name} 不接受这组参数（{key}）"), None),
+        FailureKind::Param => next_or_give_up(tr!(lang, "{} 不接受这组参数", "{} rejected the settings", name), None),
         FailureKind::Resource if tried.resource_retries < RESOURCE_RETRIES => {
             let delay = 1000u64 << tried.resource_retries;
             tried.resource_retries += 1;
             Recovery::Retry {
                 plan: plan.clone(),
-                message: format!("{name} 资源不足（{key}），{} 秒后重试，GPU 任务改为逐个运行", delay / 1000),
+                message: tr!(
+                    lang,
+                    "{} 资源不足，{} 秒后重试，GPU 任务改为逐个运行",
+                    "{} ran out of resources; retrying in {} s and running GPU jobs one at a time",
+                    name,
+                    delay / 1000
+                ),
                 disable_vendor: None,
                 delay_ms: delay,
                 serialize_gpu: true,
             }
         }
-        FailureKind::Resource => to_software(format!("{name} 多次资源不足（{key}）")),
-        FailureKind::NotBuilt | FailureKind::Unknown => to_software(format!("{name} 失败（{key}）")),
+        FailureKind::Resource => to_software(tr!(lang, "{} 多次资源不足", "{} kept running out of resources", name)),
+        FailureKind::NotBuilt | FailureKind::Unknown => to_software(tr!(lang, "{} 失败", "{} failed", name)),
     }
 }
 
@@ -200,7 +242,7 @@ mod tests {
     }
 
     fn run(kind: FailureKind, plan: &TranscodePlan, tried: &mut Tried, elapsed: f64) -> Recovery {
-        recover(kind, "错误行", plan, &media(), &caps(), tried, elapsed)
+        recover(kind, plan, &media(), &caps(), tried, elapsed, Lang::ZhCn)
     }
 
     fn retried(r: &Recovery) -> (EncoderId, String) {
@@ -300,5 +342,16 @@ mod tests {
         p.video.bit_depth = 10;
         let (enc, _) = retried(&run(FailureKind::DeviceMissing, &p, &mut Tried::default(), 0.0));
         assert_eq!(enc, EncoderId::H264Amf);
+    }
+
+    #[test]
+    fn messages_follow_the_interface_language() {
+        let p = plan_with(EncoderId::HevcNvenc);
+        let r = recover(FailureKind::DeviceMissing, &p, &media(), &caps(), &mut Tried::default(), 0.0, Lang::En);
+        let (_, msg) = retried(&r);
+        assert_eq!(
+            msg,
+            "hevc_nvenc: the device is unavailable, NVIDIA NVENC is disabled for this session; falling back to hevc_qsv"
+        );
     }
 }

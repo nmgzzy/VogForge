@@ -30,6 +30,7 @@ fn run(dir: PathBuf) -> Capabilities {
         platform: Platform::current(),
         app_dir: app.path().to_path_buf(),
         user_path: Some(dir),
+        lang: vidforge_core::i18n::Lang::ZhCn,
     };
     let t = Instant::now();
     let caps = probe(&ctx, true, &|_| {});

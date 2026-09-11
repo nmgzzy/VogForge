@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { backend } from "@/backend";
-import { pendingCapabilities } from "@/lib/defaults";
+import { DEFAULT_SETTINGS, pendingCapabilities } from "@/lib/defaults";
 import { MOCK_CAPABILITIES } from "@/mock/capabilities";
 import { useCapabilities } from "./capability";
+import { useSettings } from "./settings";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -42,6 +43,20 @@ describe("能力 store", () => {
     expect(s.error).toBe("IPC 断开");
     expect(s.probing).toBe(false);
     expect(s.caps).toBe(MOCK_CAPABILITIES);
+  });
+});
+
+describe("界面语言", () => {
+  it("探测期间换了语言，结束后按新语言再取一次，环境页不会停在旧语言", async () => {
+    await useSettings.getState().update({ ...DEFAULT_SETTINGS });
+    const spy = vi.spyOn(backend, "getCapabilities");
+    const p = useCapabilities.getState().reprobe();
+    await useSettings.getState().update({ language: "en" });
+    await p;
+    expect(spy.mock.calls.map((c) => c[1])).toEqual(["zh-CN", "en"]);
+    const lp = useCapabilities.getState().caps.tonemap.find((t) => t.id === "libplacebo")!;
+    expect(lp.note).toBe("Best quality, and the only one that handles Dolby Vision Profile 5 correctly");
+    await useSettings.getState().update({ ...DEFAULT_SETTINGS });
   });
 });
 

@@ -3,6 +3,7 @@ import { backend } from "@/backend";
 import { pendingCapabilities } from "@/lib/defaults";
 import type { Capabilities, ProbeProgress } from "@/lib/types";
 import { MOCK_CAPABILITIES } from "@/mock/capabilities";
+import { useSettings } from "./settings";
 
 interface CapabilityState {
   caps: Capabilities;
@@ -19,14 +20,17 @@ interface CapabilityState {
 async function run(set: (s: Partial<CapabilityState>) => void, force: boolean) {
   set({ probing: true, error: undefined, progress: undefined });
   const off = backend.onProbeProgress((progress) => set({ progress }));
+  const lang = useSettings.getState().settings.language;
   try {
-    const caps = await backend.getCapabilities(force);
+    const caps = await backend.getCapabilities(force, lang);
     set({ caps, probing: false, progress: undefined });
   } catch (e) {
     set({ probing: false, progress: undefined, error: e instanceof Error ? e.message : String(e) });
   } finally {
     off();
   }
+  // 探测期间换了界面语言：结果的说明还是旧语言，再取一次（命中缓存，很快）
+  if (useSettings.getState().settings.language !== lang) await run(set, false);
 }
 
 export const useCapabilities = create<CapabilityState>((set, get) => ({

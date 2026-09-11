@@ -7,8 +7,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 use vidforge_core::model::{
-    ArgSegment, Capabilities, Container, DoviAction, EncoderId, EncoderProbe, FpsPolicy, MediaInfo, RateControl,
-    StreamAction, TranscodePlan, Vendor,
+    ArgSegment, Capabilities, Container, DoviAction, EncoderId, EncoderProbe, FpsPolicy, MediaInfo, Platform,
+    RateControl, SegmentKind, StreamAction, TranscodePlan, Vendor,
 };
 use vidforge_core::pipeline::args::{build_arg_segments, build_arg_segments_measured, build_first_pass, flatten};
 use vidforge_core::pipeline::loudness::{LoudnessMeasure, measure_all};
@@ -104,9 +104,13 @@ fn facts_hold_for_every_case() {
         if encode && matches!(vp.fps, FpsPolicy::Cfr { .. }) {
             assert!(a.windows(3).any(|w| w[0] == "-fps_mode:v" && w[1] == "cfr" && w[2] == "-r"), "{name}: CFR 写法");
         }
-        // 7.8 / 2.x：硬解一律 -hwaccel auto（scale_vt 管线除外）；保留杜比视界时不硬解（hwdownload 会丢 RPU）
+        // 7.5：Windows 有 D3D11 设备时硬解写 -hwaccel d3d11va，其余 -hwaccel auto（scale_vt 管线除外）；
+        // 保留杜比视界时不硬解（hwdownload 会丢 RPU）
         if let Some(i) = a.iter().position(|x| x == "-hwaccel") {
-            assert!(matches!(a[i + 1].as_str(), "auto" | "videotoolbox"), "{name}: -hwaccel {}", a[i + 1]);
+            let caps = &g.caps[&c.caps];
+            let windows = caps.platform == Platform::Windows && caps.device_available("d3d11va");
+            let want: &[&str] = if windows { &["d3d11va", "videotoolbox"] } else { &["auto", "videotoolbox"] };
+            assert!(want.contains(&a[i + 1].as_str()), "{name}: -hwaccel {}", a[i + 1]);
             assert!(!(encode && vp.dovi == DoviAction::Preserve), "{name}: 保留杜比视界却用了硬解");
         }
         // 7.4：QSV 10bit 必须 p010le（HEVC 还要 main10），并显式指定码率控制
@@ -128,7 +132,7 @@ fn facts_hold_for_every_case() {
         // 6.3：原生 opus 编码器是实验性的，不加 -strict -2 直接失败
         assert!(!a.windows(2).any(|w| w[0].starts_with("-c:a") && w[1] == "opus"), "{name}: 用了实验性的 opus 编码器");
         // 6.4：pan 降混的那条轨不再出现 -ac
-        let audio = b.segs.iter().find(|s| s.label == "音频").map(|s| s.args.clone()).unwrap_or_default();
+        let audio = b.segs.iter().find(|s| s.kind == SegmentKind::Audio).map(|s| s.args.clone()).unwrap_or_default();
         for (idx, _) in c.plan.audio.iter().enumerate() {
             let filter = audio.iter().position(|x| x == &format!("-filter:a:{idx}")).map(|p| &audio[p + 1]);
             if filter.is_some_and(|f| f.starts_with("pan=")) {
@@ -169,8 +173,25 @@ fn key_combinations_snapshot() {
     ];
     for (snap, case) in pick {
         let b = built.iter().find(|b| b.case.name == case).unwrap_or_else(|| panic!("缺少样本 {case}"));
-        let text = b.segs.iter().map(|s| format!("{:<4} {}", s.label, s.args.join(" "))).collect::<Vec<_>>().join("\n");
+        let text =
+            b.segs.iter().map(|s| format!("{:<4} {}", zh(s.kind), s.args.join(" "))).collect::<Vec<_>>().join("\n");
         insta::assert_snapshot!(snap, text);
+    }
+}
+
+/// 快照里的段名沿用中文，快照在引入段类别前后保持不变
+fn zh(kind: SegmentKind) -> &'static str {
+    match kind {
+        SegmentKind::Global => "全局",
+        SegmentKind::Input => "输入",
+        SegmentKind::Video => "视频",
+        SegmentKind::Filter => "滤镜",
+        SegmentKind::Fps => "帧率",
+        SegmentKind::Map => "映射",
+        SegmentKind::Audio => "音频",
+        SegmentKind::Subtitle => "字幕",
+        SegmentKind::Mux => "封装",
+        SegmentKind::Output => "输出",
     }
 }
 
@@ -285,7 +306,7 @@ fn rate_control_matrix_snapshot() {
             plan.video.rate_control = rc;
             let plan = update_plan(plan, &case.media, &caps);
             let segs = build_arg_segments(&case.media, &plan, &caps, out);
-            let video = segs.iter().find(|s| s.label == "视频").unwrap().args.join(" ");
+            let video = segs.iter().find(|s| s.kind == SegmentKind::Video).unwrap().args.join(" ");
             lines.push(format!("{:<18} {:<32} {video}", enc.name(), format!("{rc:?}")));
         }
     }
@@ -309,7 +330,7 @@ fn loudness_normalization_facts_hold_for_every_case() {
         let single = build_arg_segments(&c.media, &plan, caps, out);
         let two = build_arg_segments_measured(&c.media, &plan, caps, out, &all);
         let filter_of = |segs: &[ArgSegment], i: usize| {
-            let a = &segs.iter().find(|s| s.label == "音频").unwrap().args;
+            let a = &segs.iter().find(|s| s.kind == SegmentKind::Audio).unwrap().args;
             a.iter().position(|x| x == &format!("-filter:a:{i}")).map(|p| a[p + 1].clone())
         };
         for (i, t) in plan.audio.iter().enumerate() {

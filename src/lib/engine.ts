@@ -11,6 +11,7 @@ import type {
   EncoderId,
   EncoderMeta,
   EngineMeta,
+  Lang,
   MediaInfo,
   PlanResult,
   Scenario,
@@ -69,6 +70,10 @@ export const evaluate = (
 ): PlanResult => call(() => wasm.evaluate(j(media), j(plan), j(caps), j(settings), date));
 
 export const videoHints = (media: MediaInfo): VideoHints | null => call(() => wasm.video_hints(j(media)));
+
+/** 把示例能力里的说明换成界面语言（浏览器预览用；桌面端后端直接按语言返回） */
+export const localizeCaps = (caps: Capabilities, lang: Lang): Capabilities =>
+  call(() => wasm.localize_caps(j(caps), lang));
 
 /** 按设置收紧的能力：关了硬件编码时硬件编码器不可用，关了硬件解码时不写硬解参数 */
 export function effectiveCaps(caps: Capabilities, settings: Settings): Capabilities {

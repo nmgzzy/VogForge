@@ -247,7 +247,8 @@ pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabi
         bitrate_kbps: Some(stereo_rate),
         channels: Some(2),
         title: if src.channels > 2 {
-            Some(format!("{} 立体声（降混）", stereo_codec.name().to_uppercase()))
+            // 生成轨的标题写进文件，用英文：任何语言的播放器都能读，计划也不随界面语言变化
+            Some(format!("{} Stereo (downmix)", stereo_codec.name().to_uppercase()))
         } else {
             src.title.clone()
         },
@@ -315,7 +316,7 @@ pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabi
                         bitrate_kbps: Some(640),
                         channels: Some(6),
                         title: Some(if a.atmos {
-                            "DD+ 5.1（由 Atmos 转换，不含全景声）".into()
+                            "DD+ 5.1 (from Atmos, without Atmos metadata)".into()
                         } else {
                             "DD+ 5.1".into()
                         }),

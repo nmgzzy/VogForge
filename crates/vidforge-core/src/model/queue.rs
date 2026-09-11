@@ -66,12 +66,15 @@ pub enum EventLevel {
 
 /// 任务时间线上的一条记录：预检、回退、完成、失败原因……
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct JobEvent {
     /// Unix 毫秒
     pub at: u64,
     pub level: EventLevel,
     pub message: String,
+    /// ffmpeg 原文，界面上可展开查看（需求 F-9.4：不直接抛原始报错）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// 输出校验的一项（设计文档 4.8）

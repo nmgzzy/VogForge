@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::encoder::{Codec, EncoderId, FailureKind, Vendor};
+use crate::i18n::{Lang, pick};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -118,13 +119,31 @@ pub struct DeviceProbe {
     pub error: Option<String>,
 }
 
+/// 色调映射管线不可用的原因（界面文字由它按语言生成）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum TonemapBlock {
+    /// 构建里没有需要的库或滤镜（libplacebo / OpenCL / libzimg / scale_vt）
+    NotBuilt { what: String },
+    /// 依赖的硬件设备初始化失败
+    Device { device: String, error: String },
+    /// scale_vt 只在 macOS 上有
+    MacOnly,
+    /// 试运行失败，保存 ffmpeg 原文
+    TrialFailed { error: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct TonemapProbe {
     pub id: ToneMapPipeline,
     pub available: bool,
+    /// 可用时是这条管线的特点，不可用时是原因
     pub note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<TonemapBlock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -217,7 +236,7 @@ impl Capabilities {
             devices: Vec::new(),
             tonemap: ToneMapPipeline::ORDER
                 .into_iter()
-                .map(|id| TonemapProbe { id, available: false, note: String::new() })
+                .map(|id| TonemapProbe { id, available: false, note: String::new(), block: None })
                 .collect(),
             dolby_vision_encode: false,
             dovi_split: false,
@@ -256,15 +275,21 @@ impl Capabilities {
 
     /// 决策引擎实际使用的能力（需求 F-5.6、设计文档 4.2）：设置里关了硬件编码时硬件编码器一律不可用，
     /// 关了硬件解码时不列硬解方式；本次会话因设备缺失而禁用的厂商同样不可用。环境页展示的仍是原始探测结果
-    pub fn restricted(&self, hw_encode: bool, hw_decode: bool, disabled: &[Vendor]) -> Capabilities {
+    pub fn restricted(&self, hw_encode: bool, hw_decode: bool, disabled: &[Vendor], lang: Lang) -> Capabilities {
         let mut c = self.clone();
         for e in c.encoders.iter_mut().filter(|e| e.id.is_hardware() && e.usable) {
             if !hw_encode {
                 e.usable = false;
-                e.error = Some("设置里关闭了硬件编码".into());
+                e.error =
+                    Some(pick(lang, "设置里关闭了硬件编码", "Hardware encoding is turned off in Settings").into());
             } else if disabled.contains(&e.vendor) {
                 e.usable = false;
-                e.error = Some("本次运行中该厂商的设备不可用，已停用".into());
+                let msg = pick(
+                    lang,
+                    "本次运行中该厂商的设备不可用，已停用",
+                    "This vendor's device failed during this session and is disabled",
+                );
+                e.error = Some(msg.into());
             }
         }
         if !hw_decode {

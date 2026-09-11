@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Check, ChevronsDownUp, ChevronsUpDown, Copy, ListPlus, SquareTerminal } from "lucide-react";
-import type { MediaInfo, PlanResult, TranscodePlan } from "@/lib/types";
+import { tr } from "@/i18n";
+import type { MediaInfo, PlanResult, SegmentKind, TranscodePlan } from "@/lib/types";
 import { argsToCommand, quoteArg } from "@/lib/format";
 import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
@@ -20,6 +21,32 @@ function Token({ a }: { a: string }) {
         ? "text-fg font-semibold"
         : "text-fg/85";
   return <span className={cls}>{q}</span>;
+}
+
+/** 命令段的名字 */
+function segmentLabel(kind: SegmentKind): string {
+  switch (kind) {
+    case "global":
+      return tr("全局", "Global");
+    case "input":
+      return tr("输入", "Input");
+    case "video":
+      return tr("视频", "Video");
+    case "filter":
+      return tr("滤镜", "Filter");
+    case "fps":
+      return tr("帧率", "FPS");
+    case "map":
+      return tr("映射", "Map");
+    case "audio":
+      return tr("音频", "Audio");
+    case "subtitle":
+      return tr("字幕", "Subs");
+    case "mux":
+      return tr("封装", "Mux");
+    case "output":
+      return tr("输出", "Output");
+  }
 }
 
 export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: TranscodePlan; result: PlanResult }) {
@@ -56,7 +83,7 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
 
   const addOne = () => {
     enqueue([{ media, plan }]);
-    setQueued("已加入队列");
+    setQueued(tr("已加入队列", "Added"));
     window.setTimeout(() => setQueued(undefined), 2200);
   };
   const addAll = () => {
@@ -69,8 +96,11 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
       <div className="flex items-center gap-3 px-4 py-2.5">
         <SquareTerminal className="size-4 shrink-0 text-subtle" />
         {!expanded && result.firstPass && (
-          <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[10.5px] text-muted" title="两遍编码：复制时包含第一遍的分析命令">
-            两遍
+          <span
+            className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[10.5px] text-muted"
+            title={tr("两遍编码：复制时包含第一遍的分析命令", "Two-pass: copying includes the first-pass analysis command")}
+          >
+            {tr("两遍", "2-pass")}
           </span>
         )}
         {!expanded && (
@@ -83,27 +113,33 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             ))}
           </code>
         )}
-        {expanded && <span className="flex-1 text-xs font-medium text-muted">将要执行的 ffmpeg 命令</span>}
+        {expanded && (
+          <span className="flex-1 text-xs font-medium text-muted">{tr("将要执行的 ffmpeg 命令", "The ffmpeg command to run")}</span>
+        )}
         <div className="flex shrink-0 items-center gap-1.5">
           <Button
             size="sm"
             variant="ghost"
             icon={expanded ? <ChevronsDownUp className="size-3.5" /> : <ChevronsUpDown className="size-3.5" />}
             onClick={toggle}
-            title={expanded ? "收起" : "展开查看完整命令"}
+            title={expanded ? tr("收起", "Collapse") : tr("展开查看完整命令", "Expand to see the full command")}
           />
           <Button
             size="sm"
             icon={copied ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
             onClick={copy}
-            title={caps.platform === "windows" ? "按 PowerShell 规则加引号" : "按 bash/zsh 规则加引号"}
+            title={
+              caps.platform === "windows"
+                ? tr("按 PowerShell 规则加引号", "Quoted for PowerShell")
+                : tr("按 bash/zsh 规则加引号", "Quoted for bash/zsh")
+            }
           >
-            {copied ? "已复制" : "复制"}
+            {copied ? tr("已复制", "Copied") : tr("复制", "Copy")}
           </Button>
           <div className="mx-1 h-5 w-px bg-line" />
           {files.length > 1 && (
             <Button size="sm" onClick={addAll}>
-              全部加入（{files.length}）
+              {tr(`全部加入（${files.length}）`, `Add all (${files.length})`)}
             </Button>
           )}
           <Button
@@ -111,19 +147,26 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             variant="primary"
             icon={<ListPlus className="size-3.5" />}
             onClick={addOne}
-            title={conflicts ? `有 ${conflicts} 项保真度要求与当前参数冲突` : undefined}
+            title={
+              conflicts
+                ? tr(
+                    `有 ${conflicts} 项保真度要求与当前参数冲突`,
+                    `${conflicts} fidelity requirement(s) conflict with the current settings`,
+                  )
+                : undefined
+            }
           >
-            {queued ?? "加入队列"}
+            {queued ?? tr("加入队列", "Add to queue")}
           </Button>
         </div>
       </div>
 
       {expanded && (
         <div className="max-h-[38vh] overflow-y-auto border-t border-line bg-sunken/60 px-4 py-3">
-          <div className="selectable grid grid-cols-[52px_1fr] gap-x-3 gap-y-1.5 font-mono text-[11.5px] leading-relaxed">
+          <div className="selectable grid grid-cols-[56px_1fr] gap-x-3 gap-y-1.5 font-mono text-[11.5px] leading-relaxed">
             {result.loudnessMeasure?.map((m, k) => (
               <div key={`m${k}`} className="contents" data-testid="loudness-measure">
-                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">测量响度</span>
+                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">{tr("测量响度", "Loudness")}</span>
                 <span className="text-muted [overflow-wrap:anywhere]">
                   {m.map((a, j) => (
                     <span key={j}>
@@ -136,7 +179,7 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             ))}
             {result.firstPass && (
               <div className="contents" data-testid="first-pass">
-                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">第一遍</span>
+                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">{tr("第一遍", "Pass 1")}</span>
                 <span className="border-b border-line pb-2 [overflow-wrap:anywhere]">
                   {result.firstPass.map((a, j) => (
                     <span key={j}>
@@ -149,7 +192,7 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             )}
             {segs.map((s, i) => (
               <div key={i} className="contents">
-                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">{s.label}</span>
+                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">{segmentLabel(s.kind)}</span>
                 <span className="[overflow-wrap:anywhere]">
                   {s.args.map((a, j) => (
                     <span key={j}>
@@ -162,9 +205,22 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             ))}
           </div>
           <p className="mt-3 font-sans text-[11px] text-subtle">
-            {result.loudnessMeasure && "响度标准化：执行时先测量每条音轨的响度，再把测得的值填进 loudnorm（预览里是单遍写法）。"}
-            {result.firstPass && "两遍编码：先运行第一遍（只分析画面、不输出文件），再运行其余命令。"}
-            实际执行时写入 <code className="font-mono">.vidforge-part</code> 临时文件，校验通过后才改名为上面的最终文件名。
+            {result.loudnessMeasure &&
+              tr(
+                "响度标准化：执行时先测量每条音轨的响度，再把测得的值填进 loudnorm（预览里是单遍写法）。",
+                "Loudness normalization: each audio track is measured first and the values are passed to loudnorm (the preview shows the single-pass form). ",
+              )}
+            {result.firstPass &&
+              tr(
+                "两遍编码：先运行第一遍（只分析画面、不输出文件），再运行其余命令。",
+                "Two-pass: the first pass runs first (analysis only, no output file), then the rest. ",
+              )}
+            {tr("实际执行时写入 ", "Encoding writes to a ")}
+            <code className="font-mono">.vidforge-part</code>
+            {tr(
+              " 临时文件，校验通过后才改名为上面的最终文件名。",
+              " temporary file that is renamed to the final name above only after verification.",
+            )}
           </p>
         </div>
       )}

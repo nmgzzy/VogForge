@@ -17,14 +17,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { backend } from "@/backend";
+import { tr } from "@/i18n";
 import type { MediaInfo, SourceHint } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { formatBytes, formatDuration, resolutionLabel } from "@/lib/format";
 import { mediaFeatures } from "@/lib/media-features";
 import { CODEC_LABEL } from "@/lib/encoders";
-import { SCENARIOS } from "@/lib/scenarios";
+import { scenarioTitle } from "@/lib/scenarios";
 import { useProject, type ImportReport } from "@/stores/project";
-import { Badge, Button, Empty, ProgressBar } from "./ui";
+import { Badge, Button, Empty, ProgressBar, RawDetail } from "./ui";
 
 export const SOURCE_ICON: Record<SourceHint, LucideIcon> = {
   iphone: Smartphone,
@@ -52,7 +53,7 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
   const features = mediaFeatures(m);
   const shown = features.slice(0, 3);
   const more = features.length - shown.length;
-  const scenarioTitle = SCENARIOS.find((s) => s.id === scenario)?.title;
+  const scenarioName = scenario && scenarioTitle(scenario);
 
   return (
     <div
@@ -79,8 +80,8 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
           <p className="min-w-0 flex-1 truncate text-[13px] font-medium" title={m.path}>
             {m.name}
           </p>
-          {scenarioTitle && (
-            <span className="shrink-0 text-[10.5px] text-subtle group-focus-within:invisible group-hover:invisible">{scenarioTitle}</span>
+          {scenarioName && (
+            <span className="shrink-0 text-[10.5px] text-subtle group-focus-within:invisible group-hover:invisible">{scenarioName}</span>
           )}
         </div>
         <p className="mt-0.5 truncate text-[11.5px] text-muted tabular">
@@ -94,7 +95,7 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
                 {f.label}
               </Badge>
             ))}
-            {more > 0 && <Badge title={features.slice(3).map((f) => f.label).join("、")}>+{more}</Badge>}
+            {more > 0 && <Badge title={features.slice(3).map((f) => f.label).join(tr("、", ", "))}>+{more}</Badge>}
           </div>
         )}
       </div>
@@ -103,8 +104,8 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
           e.stopPropagation();
           remove(m.id);
         }}
-        title="从列表移除（不会删除文件）"
-        aria-label={`从列表移除 ${m.name}`}
+        title={tr("从列表移除（不会删除文件）", "Remove from the list (the file is not deleted)")}
+        aria-label={tr(`从列表移除 ${m.name}`, `Remove ${m.name} from the list`)}
         className="absolute top-2 right-2 flex size-6 items-center justify-center rounded text-subtle opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-sunken hover:text-fg focus-visible:opacity-100"
       >
         <X className="size-3.5" />
@@ -117,9 +118,9 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
 export function ImportReportCard({ report, onClose }: { report: ImportReport; onClose: () => void }) {
   const failed = report.failures.length;
   const facts = [
-    report.added > 0 && `已添加 ${report.added} 个`,
-    report.duplicate > 0 && `${report.duplicate} 个已在列表中`,
-    report.skipped > 0 && `跳过 ${report.skipped} 个非视频文件`,
+    report.added > 0 && tr(`已添加 ${report.added} 个`, `${report.added} added`),
+    report.duplicate > 0 && tr(`${report.duplicate} 个已在列表中`, `${report.duplicate} already in the list`),
+    report.skipped > 0 && tr(`跳过 ${report.skipped} 个非视频文件`, `${report.skipped} non-video file(s) skipped`),
   ].filter(Boolean);
   return (
     <div
@@ -132,15 +133,17 @@ export function ImportReportCard({ report, onClose }: { report: ImportReport; on
       <div className="flex items-start gap-2">
         {failed > 0 && <AlertTriangle className="mt-px size-3.5 shrink-0 text-danger" />}
         <div className="min-w-0 flex-1">
-          {failed > 0 && <p className="font-medium text-danger">{failed} 个文件无法分析</p>}
-          {facts.length > 0 && <p className={cn(failed > 0 && "mt-0.5 text-muted")}>{facts.join("，")}</p>}
+          {failed > 0 && (
+            <p className="font-medium text-danger">{tr(`${failed} 个文件无法分析`, `${failed} file(s) could not be analyzed`)}</p>
+          )}
+          {facts.length > 0 && <p className={cn(failed > 0 && "mt-0.5 text-muted")}>{facts.join(tr("，", ", "))}</p>}
         </div>
-        <button onClick={onClose} aria-label="关闭导入结果" className="text-subtle hover:text-fg">
+        <button onClick={onClose} aria-label={tr("关闭导入结果", "Close the import result")} className="text-subtle hover:text-fg">
           <X className="size-3.5" />
         </button>
       </div>
       {failed > 0 && (
-        <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
+        <ul className="mt-1.5 max-h-48 space-y-1 overflow-y-auto">
           {report.failures.map((f, i) => (
             <li key={`${f.path}-${i}`} className="min-w-0">
               {f.path && (
@@ -148,7 +151,8 @@ export function ImportReportCard({ report, onClose }: { report: ImportReport; on
                   {baseName(f.path)}
                 </p>
               )}
-              <p className="break-all text-muted">{f.reason}</p>
+              <p className="text-muted [overflow-wrap:anywhere]">{f.reason}</p>
+              <RawDetail text={f.detail} />
             </li>
           ))}
         </ul>
@@ -191,16 +195,21 @@ export function FileList() {
   // 浏览器预览无法读取本地文件的真实路径，改为载入示例素材
   const loadDemo = () => {
     loadSamples();
-    setNotice("浏览器预览模式无法读取本地文件，已载入示例素材。桌面版会直接分析选中的文件。");
+    setNotice(
+      tr(
+        "浏览器预览模式无法读取本地文件，已载入示例素材。桌面版会直接分析选中的文件。",
+        "The browser preview cannot read local files, so the sample footage was loaded. The desktop app analyzes the files you pick.",
+      ),
+    );
     window.setTimeout(() => setNotice(undefined), 5000);
   };
   const addFiles = async () => {
     if (!desktop) return loadDemo();
-    void importPaths(await backend.pickFiles("添加视频文件"));
+    void importPaths(await backend.pickFiles(tr("添加视频文件", "Add video files")));
   };
   const addFolder = async () => {
     if (!desktop) return loadDemo();
-    const dir = await backend.pickDirectory("添加文件夹（会递归扫描子文件夹）");
+    const dir = await backend.pickDirectory(tr("添加文件夹（会递归扫描子文件夹）", "Add a folder (subfolders are scanned too)"));
     if (dir) void importPaths([dir]);
   };
 
@@ -224,7 +233,7 @@ export function FileList() {
   return (
     <div className="relative flex w-[288px] shrink-0 flex-col border-r border-line bg-bg" {...html5Drop}>
       <header className="flex h-12 items-center gap-2 border-b border-line px-3">
-        <h2 className="text-[13px] font-semibold">源文件</h2>
+        <h2 className="text-[13px] font-semibold">{tr("源文件", "Sources")}</h2>
         {files.length > 0 && <span className="text-xs text-subtle tabular">{files.length}</span>}
         <div className="ml-auto flex gap-1">
           <Button
@@ -232,18 +241,18 @@ export function FileList() {
             variant="ghost"
             icon={<FilePlus2 className="size-3.5" />}
             onClick={() => void addFiles()}
-            title="添加文件"
+            title={tr("添加文件", "Add files")}
           >
-            文件
+            {tr("文件", "Files")}
           </Button>
           <Button
             size="sm"
             variant="ghost"
             icon={<FolderPlus className="size-3.5" />}
             onClick={() => void addFolder()}
-            title="添加文件夹（可递归）"
+            title={tr("添加文件夹（可递归）", "Add a folder (recursive)")}
           >
-            文件夹
+            {tr("文件夹", "Folder")}
           </Button>
         </div>
       </header>
@@ -253,8 +262,13 @@ export function FileList() {
           <div className="flex items-center gap-2">
             <Loader2 className="size-3.5 shrink-0 animate-spin" />
             <span className="truncate">
-              {progress ? `正在分析 ${progress.done}/${progress.total}：${progress.current}` : "正在扫描文件…"}
-              {queued > 0 && `（另有 ${queued} 项排队）`}
+              {progress
+                ? tr(
+                    `正在分析 ${progress.done}/${progress.total}：${progress.current}`,
+                    `Analyzing ${progress.done}/${progress.total}: ${progress.current}`,
+                  )
+                : tr("正在扫描文件…", "Scanning files…")}
+              {queued > 0 && tr(`（另有 ${queued} 项排队）`, ` (${queued} more waiting)`)}
             </span>
           </div>
           {progress && progress.total > 0 && (
@@ -274,8 +288,11 @@ export function FileList() {
         {files.length === 0 ? (
           <Empty
             icon={<Upload className="size-5" />}
-            title="拖入视频或文件夹"
-            description="支持 MP4 / MOV / MKV / M2TS 等常见格式。文件夹会递归扫描，只收视频文件。"
+            title={tr("拖入视频或文件夹", "Drop videos or folders here")}
+            description={tr(
+              "支持 MP4 / MOV / MKV / M2TS 等常见格式。文件夹会递归扫描，只收视频文件。",
+              "MP4, MOV, MKV, M2TS and other common formats. Folders are scanned recursively for video files only.",
+            )}
             action={
               desktop ? (
                 <div className="flex gap-2">
@@ -286,15 +303,15 @@ export function FileList() {
                     onClick={() => void addFiles()}
                     disabled={importing}
                   >
-                    添加文件
+                    {tr("添加文件", "Add files")}
                   </Button>
                   <Button size="sm" icon={<FolderPlus className="size-3.5" />} onClick={() => void addFolder()} disabled={importing}>
-                    添加文件夹
+                    {tr("添加文件夹", "Add folder")}
                   </Button>
                 </div>
               ) : (
                 <Button size="sm" variant="primary" onClick={loadSamples}>
-                  载入示例素材
+                  {tr("载入示例素材", "Load sample footage")}
                 </Button>
               )
             }
@@ -310,9 +327,9 @@ export function FileList() {
 
       {files.length > 0 && (
         <footer className="flex h-10 items-center gap-2 border-t border-line px-3 text-[11.5px] text-muted">
-          <span className="tabular">共 {formatBytes(total)}</span>
+          <span className="tabular">{tr(`共 ${formatBytes(total)}`, `${formatBytes(total)} total`)}</span>
           <Button size="xs" variant="ghost" className="ml-auto" icon={<Trash2 className="size-3" />} onClick={clear}>
-            清空列表
+            {tr("清空列表", "Clear list")}
           </Button>
         </footer>
       )}
@@ -320,7 +337,7 @@ export function FileList() {
       {dragging && (
         <div className="pointer-events-none absolute inset-2 z-10 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent/10 backdrop-blur-[2px]">
           <Upload className="size-7 text-accent" />
-          <p className="font-medium text-accent">松开以添加</p>
+          <p className="font-medium text-accent">{tr("松开以添加", "Drop to add")}</p>
         </div>
       )}
     </div>

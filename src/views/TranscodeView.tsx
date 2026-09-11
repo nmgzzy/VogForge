@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { FileVideo } from "lucide-react";
 import { backend } from "@/backend";
+import { tr } from "@/i18n";
 import { evaluate } from "@/lib/engine";
 import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject, useSelected } from "@/stores/project";
@@ -66,12 +67,15 @@ export function TranscodeView() {
           <div className="flex flex-1 items-center justify-center">
             <Empty
               icon={<FileVideo className="size-5" />}
-              title="还没有选择文件"
-              description="在左侧添加视频后，这里会分析它的特征，按用途推荐参数，并告诉你哪些信息能保留。"
+              title={tr("还没有选择文件", "No file selected")}
+              description={tr(
+                "在左侧添加视频后，这里会分析它的特征，按用途推荐参数，并告诉你哪些信息能保留。",
+                "Add videos on the left. VidForge analyzes each one, recommends settings for your purpose and tells you what can be kept.",
+              )}
               action={
                 backend.kind === "mock" && (
                   <Button variant="primary" size="sm" onClick={loadSamples}>
-                    载入示例素材
+                    {tr("载入示例素材", "Load sample footage")}
                   </Button>
                 )
               }

@@ -2,6 +2,7 @@
  * 浏览器预览的队列演示数据：预置任务、模拟速度与模拟的校验报告。模拟推进在 src/backend/mock-queue.ts；
  * 桌面应用的队列在 crates/vidforge-core/src/queue，进度来自 ffmpeg -progress 的块协议解析。
  */
+import { tr } from "@/i18n";
 import type { FidelityKind, Job, JobEvent, MediaInfo, ReportItem, Settings, TranscodePlan } from "@/lib/types";
 import { DEFAULT_SETTINGS } from "@/lib/defaults";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -12,9 +13,14 @@ import { MOCK_MEDIA } from "./media";
 const T0 = Date.now();
 const media = (id: string) => MOCK_MEDIA.find((m) => m.id === id)!;
 
-function ev(offsetSec: number, level: JobEvent["level"], message: string): JobEvent {
-  return { at: T0 + offsetSec * 1000, level, message };
+function ev(offsetSec: number, level: JobEvent["level"], message: string, detail?: string): JobEvent {
+  return { at: T0 + offsetSec * 1000, level, message, detail };
 }
+
+const addedText = () => tr("已加入队列", "Added to the queue");
+const startedText = () => tr("开始转码", "Transcoding started");
+const precheckText = (enc: string) =>
+  tr(`预检通过：${enc} 以当前参数试编码 3 帧成功`, `Pre-check passed: ${enc} encoded 3 test frames with these settings`);
 
 /** 命令与输出路径按入队时的设置计算，与转码页预览的一致 */
 export function makeJob(
@@ -34,7 +40,7 @@ export function makeJob(
     status: "queued",
     progress: { percent: 0, outTimeSec: 0, speed: 0, fps: 0, sizeBytes: 0, dupFrames: 0, dropFrames: 0 },
     encoderUsed: plan.video.encoder,
-    events: [{ at: Date.now(), level: "info", message: "已加入队列" }],
+    events: [{ at: Date.now(), level: "info", message: addedText() }],
     log: [],
     attempts: 0,
   };
@@ -54,7 +60,7 @@ export function estimatedOutputSize(job: Job): number {
 
 /** 取说明的第一句，报告表格里放不下整段解释 */
 function firstClause(text: string): string {
-  return text.split(/[。；]/)[0] ?? text;
+  return text.split(/[。；]|\. |; /)[0] ?? text;
 }
 
 /** 某一项确实保留下来时，报告里"实际"一栏写什么 */
@@ -62,19 +68,23 @@ function achievedText(kind: FidelityKind, m: MediaInfo, p: TranscodePlan): strin
   const v = m.video[0];
   switch (kind) {
     case "dolbyVision":
-      return p.video.action === "copy" ? "原样复制，含增强层" : "配置记录与逐帧 RPU 均存在";
+      return p.video.action === "copy"
+        ? tr("原样复制，含增强层", "Copied as-is, including the enhancement layer")
+        : tr("配置记录与逐帧 RPU 均存在", "Configuration record and per-frame RPU present");
     case "hdr10":
-      return v?.color.hdrKind === "hlg" ? "bt2020 / arib-std-b67" : "MDCV 与 MaxCLL 存在（按有理数求值比较）";
+      return v?.color.hdrKind === "hlg"
+        ? "bt2020 / arib-std-b67"
+        : tr("MDCV 与 MaxCLL 存在（按有理数求值比较）", "MDCV and MaxCLL present (compared as rational values)");
     case "hdr10plus":
-      return "原样复制";
+      return tr("原样复制", "Copied as-is");
     case "lossless":
-      return "复制轨编码与源一致";
+      return tr("复制轨编码与源一致", "Copied tracks match the source codec");
     case "allAudio":
-      return `${m.audio.length} 条均在`;
+      return tr(`${m.audio.length} 条均在`, `all ${m.audio.length} present`);
     case "allSubtitles":
-      return `${m.subtitle.length} 条均在`;
+      return tr(`${m.subtitle.length} 条均在`, `all ${m.subtitle.length} present`);
     case "chapters":
-      return `${m.chapters} 个`;
+      return String(m.chapters);
     case "tenBit":
       return p.video.encoder.endsWith("_qsv") || p.video.encoder.endsWith("_nvenc") ? "p010le" : "yuv420p10le";
   }
@@ -92,25 +102,26 @@ export function buildReport(job: Job): ReportItem[] {
   const v = m.video[0];
   const p = job.plan;
   const items: ReportItem[] = [
-    { label: "时长", expected: formatDuration(m.durationSec), actual: formatDuration(m.durationSec), ok: true },
+    { label: tr("时长", "Duration"), expected: formatDuration(m.durationSec), actual: formatDuration(m.durationSec), ok: true },
   ];
   if (v && p.video.action === "encode" && p.video.fps.kind === "cfr") {
     const fps = p.video.fps.fps.toFixed(3).replace(/\.?0+$/, "");
-    items.push({ label: "固定帧率", expected: "r_frame_rate = avg_frame_rate", actual: `${fps} / ${fps}`, ok: true });
-    items.push({ label: "音画对齐", expected: "差值 < 1 帧", actual: "0.000 秒", ok: true });
+    items.push({ label: tr("固定帧率", "Constant frame rate"), expected: "r_frame_rate = avg_frame_rate", actual: `${fps} / ${fps}`, ok: true });
+    items.push({ label: tr("音画对齐", "A/V sync"), expected: tr("差值 < 1 帧", "difference < 1 frame"), actual: tr("0.000 秒", "0.000 s"), ok: true });
   } else if (v) {
     const n = v.frameCount ?? Math.round(v.fpsAvg * m.durationSec);
-    items.push({ label: "帧数", expected: n.toLocaleString(), actual: n.toLocaleString(), ok: true });
+    items.push({ label: tr("帧数", "Frames"), expected: n.toLocaleString(), actual: n.toLocaleString(), ok: true });
   }
-  items.push({ label: "音轨数", expected: `${p.audio.length} 条`, actual: `${p.audio.length} 条`, ok: true });
+  const tracks = tr(`${p.audio.length} 条`, String(p.audio.length));
+  items.push({ label: tr("音轨数", "Audio tracks"), expected: tracks, actual: tracks, ok: true });
 
   for (const f of evaluate(m, p, caps).fidelity) {
     if (!p.fidelity[f.kind] || f.state === "not_applicable") continue;
     const ok = f.state === "achievable";
     items.push({
       label: f.label,
-      expected: "保留",
-      actual: ok ? achievedText(f.kind, m, p) : `未保留：${firstClause(f.detail)}`,
+      expected: tr("保留", "kept"),
+      actual: ok ? achievedText(f.kind, m, p) : tr(`未保留：${firstClause(f.detail)}`, `not kept: ${firstClause(f.detail)}`),
       ok,
     });
   }
@@ -152,10 +163,17 @@ export function seedJobs(): Job[] {
     finishedAt: T0 - 18_000,
     log: SAMPLE_LOG,
     events: [
-      ev(-470, "info", "已加入队列"),
-      ev(-462, "info", "预检通过：libx265 以当前参数试编码 3 帧成功"),
-      ev(-460, "info", "开始转码"),
-      ev(-18, "info", `完成，校验通过：${formatBytes(iphone.sizeBytes)} → ${formatBytes(doneSize)}`),
+      ev(-470, "info", addedText()),
+      ev(-462, "info", precheckText("libx265")),
+      ev(-460, "info", startedText()),
+      ev(
+        -18,
+        "info",
+        tr(
+          `完成，校验通过：${formatBytes(iphone.sizeBytes)} → ${formatBytes(doneSize)}`,
+          `Done, all checks passed: ${formatBytes(iphone.sizeBytes)} → ${formatBytes(doneSize)}`,
+        ),
+      ),
     ],
   } satisfies Partial<Job>);
   done.report = buildReport(done);
@@ -169,9 +187,9 @@ export function seedJobs(): Job[] {
     startedAt: T0 - 95_000,
     progress: { percent: 37, outTimeSec: drone.durationSec * 0.37, speed: 0.34, fps: 20.4, sizeBytes: 402_000_000, dupFrames: 0, dropFrames: 0 },
     events: [
-      ev(-100, "info", "已加入队列"),
-      ev(-96, "info", "预检通过：libx265 以当前参数试编码 3 帧成功"),
-      ev(-95, "info", "开始转码"),
+      ev(-100, "info", addedText()),
+      ev(-96, "info", precheckText("libx265")),
+      ev(-95, "info", startedText()),
     ],
   } satisfies Partial<Job>);
 
@@ -191,10 +209,18 @@ export function seedJobs(): Job[] {
     startedAt: T0 - 41_000,
     progress: { percent: 58, outTimeSec: camera.durationSec * 0.58, speed: 2.9, fps: 72.5, sizeBytes: 139_000_000, dupFrames: 0, dropFrames: 0 },
     events: [
-      ev(-44, "info", "已加入队列"),
-      ev(-43, "warn", "hevc_nvenc 的设备不可用（[hevc_nvenc @ 000001f2e4327240] Cannot load nvcuda.dll），本次运行不再使用 NVIDIA NVENC，回退到 hevc_qsv"),
-      ev(-42, "info", "预检通过：hevc_qsv 以当前参数试编码 3 帧成功"),
-      ev(-41, "info", "开始转码"),
+      ev(-44, "info", addedText()),
+      ev(
+        -43,
+        "warn",
+        tr(
+          "hevc_nvenc 的设备不可用，本次运行不再使用 NVIDIA NVENC，回退到 hevc_qsv",
+          "hevc_nvenc: the device is unavailable, NVIDIA NVENC is disabled for this session; falling back to hevc_qsv",
+        ),
+        "[hevc_nvenc @ 000001f2e4327240] Cannot load nvcuda.dll",
+      ),
+      ev(-42, "info", precheckText("hevc_qsv")),
+      ev(-41, "info", startedText()),
     ],
   } satisfies Partial<Job>);
 
@@ -225,8 +251,16 @@ export function seedJobs(): Job[] {
       "Error opening input files: Invalid data found when processing input",
     ],
     events: [
-      ev(-301, "info", "已加入队列"),
-      ev(-300, "error", "文件不完整或已损坏：缺少 moov 索引。常见于录制中途断电、手机存储已满或拷贝未完成。可尝试用原设备重新导出，或使用 untrunc 等工具修复"),
+      ev(-301, "info", addedText()),
+      ev(
+        -300,
+        "error",
+        tr(
+          "libx265 失败：文件不完整或已损坏。常见于拍摄中断或复制没有完成。用原设备重新导出，或用 untrunc 之类的工具修复",
+          "libx265 failed: The file is incomplete or damaged. This usually comes from an interrupted recording or copy. Export it again or repair it with a tool like untrunc",
+        ),
+        "[mov,mp4,m4a,3gp,3g2,mj2 @ 000001f2a8c4e0c0] moov atom not found",
+      ),
     ],
   } satisfies Partial<Job>);
 

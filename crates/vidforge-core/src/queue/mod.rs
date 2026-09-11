@@ -11,18 +11,21 @@ pub mod process;
 mod worker;
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::config::Settings;
+use crate::i18n::{Lang, pick};
 use crate::model::{
     Capabilities, EnvStatus, EventLevel, Job, JobEvent, JobProgress, JobProgressEvent, JobStatus, QueueItem, QueueOp,
     QueueSnapshot, StreamAction, TranscodePlan, Vendor,
 };
 use crate::pipeline::args::{build_arg_segments, build_first_pass, flatten};
 use crate::pipeline::update_plan;
+use crate::tr;
 
 use self::fallback::Tried;
 use self::process::{ProcessControl, Tools};
@@ -52,6 +55,8 @@ pub struct QueueDeps {
     pub sink: Arc<dyn EventSink>,
     /// `queue.json` 的位置；None 时不持久化
     pub store: Option<PathBuf>,
+    /// 环境就绪之前用的界面语言（之后跟随设置）
+    pub lang: Lang,
 }
 
 /// 调度与执行依据的环境：探测结果与用户设置
@@ -64,7 +69,7 @@ pub struct Environment {
 impl Environment {
     /// 决策引擎实际使用的能力：按设置关掉硬件编解码，去掉本次运行停用的厂商
     fn effective(&self, disabled: &[Vendor]) -> Capabilities {
-        self.caps.restricted(self.settings.hw_encode, self.settings.hw_decode, disabled)
+        self.caps.restricted(self.settings.hw_encode, self.settings.hw_decode, disabled, self.settings.language)
     }
 }
 
@@ -164,19 +169,47 @@ impl Inner {
         }
     }
 
+    /// 当前界面语言：环境就绪后跟随设置
+    fn lang(&self, s: &State) -> Lang {
+        s.env.as_ref().map_or(self.deps.lang, |e| e.settings.language)
+    }
+
     fn event(&self, s: &mut State, id: &str, level: EventLevel, message: impl Into<String>) {
+        self.event_detail(s, id, level, message, None);
+    }
+
+    /// 带 ffmpeg 原文的事件：界面上正文是说明，原文可展开
+    fn event_detail(
+        &self,
+        s: &mut State,
+        id: &str,
+        level: EventLevel,
+        message: impl Into<String>,
+        detail: Option<String>,
+    ) {
         let at = self.now();
         if let Some(j) = s.job_mut(id) {
-            j.events.push(JobEvent { at, level, message: message.into() });
+            j.events.push(JobEvent { at, level, message: message.into(), detail: detail.filter(|d| !d.is_empty()) });
         }
     }
 
     /// 任务结束：状态、时间、事件，清理调度用的临时状态
     fn finish(&self, id: &str, status: JobStatus, level: EventLevel, message: impl Into<String>) {
+        self.finish_detail(id, status, level, message, None);
+    }
+
+    fn finish_detail(
+        &self,
+        id: &str,
+        status: JobStatus,
+        level: EventLevel,
+        message: impl Into<String>,
+        detail: Option<String>,
+    ) {
         {
             let mut s = self.lock();
             let now = self.now();
-            self.event(&mut s, id, level, message);
+            self.event_detail(&mut s, id, level, message, detail);
             if let Some(j) = s.job_mut(id) {
                 j.status = status;
                 j.finished_at = Some(now);
@@ -268,7 +301,7 @@ impl Queue {
     pub fn start(deps: QueueDeps) -> Queue {
         let mut snap =
             deps.store.as_deref().map(persist::load).unwrap_or(QueueSnapshot { jobs: Vec::new(), paused: false });
-        let recovered = persist::recover(&mut snap.jobs, deps.clock.now_ms());
+        let recovered = persist::recover(&mut snap.jobs, deps.clock.now_ms(), deps.lang);
         let state = State { jobs: snap.jobs, paused: snap.paused, ..Default::default() };
         let inner =
             Arc::new(Inner { deps, state: Mutex::new(state), wake: Condvar::new(), publish_lock: Mutex::new(()) });
@@ -302,11 +335,44 @@ impl Queue {
         self.inner.lock().snapshot()
     }
 
+    /// 可以移到回收站的源文件（需求 F-6.10）：只限已完成且校验全部通过、输出文件还在的任务，源文件还在、
+    /// 不是输出本身，也没有其他没跑完的任务要用它。
+    /// 界面传来的是任务 id，不接受任意路径，避免界面层误删别的文件
+    pub fn trashable_sources(&self, ids: &[String]) -> Vec<PathBuf> {
+        let s = self.inner.lock();
+        let mut out: Vec<PathBuf> = Vec::new();
+        for j in s.jobs.iter().filter(|j| ids.contains(&j.id)) {
+            let verified = j.report.as_ref().is_some_and(|r| !r.is_empty() && r.iter().all(|x| x.ok));
+            let src = PathBuf::from(&j.media.path);
+            // 校验之后输出可能被删掉或移走：执行时再看一眼，输出不在就不动源文件
+            let output_there = fs::metadata(&j.output_path).is_ok_and(|m| m.is_file() && m.len() > 0);
+            let is_output = files::same_path(&src, Path::new(&j.output_path));
+            let listed = out.iter().any(|p| files::same_path(p, &src));
+            // 同一个源文件还有没跑完的任务（例如另一种用途）时不能动它
+            let needed = s
+                .jobs
+                .iter()
+                .any(|o| o.id != j.id && !o.status.finished() && files::same_path(Path::new(&o.media.path), &src));
+            if j.status == JobStatus::Done
+                && verified
+                && output_there
+                && src.is_file()
+                && !is_output
+                && !listed
+                && !needed
+            {
+                out.push(src);
+            }
+        }
+        out
+    }
+
     /// 加入队列，返回新任务的 id
     pub fn add(&self, items: Vec<QueueItem>) -> Vec<String> {
         let ids = {
             let mut s = self.inner.lock();
             let now = self.inner.now();
+            let lang = self.inner.lang(&s);
             let mut ids = Vec::new();
             for item in items {
                 s.seq += 1;
@@ -321,7 +387,12 @@ impl Queue {
                     output_path: String::new(),
                     status: JobStatus::Queued,
                     progress: JobProgress::default(),
-                    events: vec![JobEvent { at: now, level: EventLevel::Info, message: "已加入队列".into() }],
+                    events: vec![JobEvent {
+                        at: now,
+                        level: EventLevel::Info,
+                        message: pick(lang, "已加入队列", "Added to the queue").into(),
+                        detail: None,
+                    }],
                     log: Vec::new(),
                     report: None,
                     started_at: None,
@@ -345,36 +416,42 @@ impl Queue {
         {
             let mut s = inner.lock();
             let now = inner.now();
+            let lang = inner.lang(&s);
+            let l = |zh: &str, en: &str| pick(lang, zh, en).to_string();
             let status = |s: &State, id: &str| {
-                s.jobs.iter().find(|j| j.id == id).map(|j| j.status).ok_or_else(|| format!("没有这个任务：{id}"))
+                s.jobs
+                    .iter()
+                    .find(|j| j.id == id)
+                    .map(|j| j.status)
+                    .ok_or_else(|| tr!(lang, "没有这个任务：{}", "No such job: {}", id))
             };
             match op {
                 QueueOp::Pause { id } => {
                     if status(&s, &id)? != JobStatus::Running {
-                        return Err("只有进行中的任务可以暂停".into());
+                        return Err(l("只有进行中的任务可以暂停", "Only running jobs can be paused"));
                     }
                     if let Some(c) = s.controls.get(&id) {
                         if !c.suspend() {
-                            return Err("无法暂停这个进程".into());
+                            return Err(l("无法暂停这个进程", "Could not pause this process"));
                         }
                     }
                     s.job_mut(&id).unwrap().status = JobStatus::Paused;
                     s.pause_since.insert(id.clone(), now);
-                    inner.event(&mut s, &id, EventLevel::Info, "已暂停");
+                    inner.event(&mut s, &id, EventLevel::Info, l("已暂停", "Paused"));
                 }
                 QueueOp::Resume { id } => {
                     if status(&s, &id)? != JobStatus::Paused {
-                        return Err("只有已暂停的任务可以继续".into());
+                        return Err(l("只有已暂停的任务可以继续", "Only paused jobs can be resumed"));
                     }
                     resume_job(&mut s, &id, now);
-                    inner.event(&mut s, &id, EventLevel::Info, "已继续");
+                    inner.event(&mut s, &id, EventLevel::Info, l("已继续", "Resumed"));
                 }
                 QueueOp::Cancel { id } => match status(&s, &id)? {
                     JobStatus::Queued => {
                         let j = s.job_mut(&id).unwrap();
                         j.status = JobStatus::Cancelled;
                         j.finished_at = Some(now);
-                        inner.event(&mut s, &id, EventLevel::Info, "已取消");
+                        inner.event(&mut s, &id, EventLevel::Info, l("已取消", "Cancelled"));
                     }
                     JobStatus::Running | JobStatus::Paused => {
                         s.cancel.insert(id.clone());
@@ -383,12 +460,15 @@ impl Queue {
                             c.kill();
                         }
                     }
-                    _ => return Err("任务已经结束".into()),
+                    _ => return Err(l("任务已经结束", "The job has already finished")),
                 },
                 QueueOp::Retry { id } => {
                     let st = status(&s, &id)?;
                     if !st.finished() || st == JobStatus::Done {
-                        return Err("只有失败、取消或跳过的任务可以重试".into());
+                        return Err(l(
+                            "只有失败、取消或跳过的任务可以重试",
+                            "Only failed, cancelled or skipped jobs can be retried",
+                        ));
                     }
                     s.tried.remove(&id);
                     let j = s.job_mut(&id).unwrap();
@@ -397,17 +477,21 @@ impl Queue {
                     j.status = JobStatus::Queued;
                     j.progress = JobProgress::default();
                     (j.report, j.finished_at, j.output_size) = (None, None, None);
-                    inner.event(&mut s, &id, EventLevel::Info, "重新加入队列");
+                    inner.event(&mut s, &id, EventLevel::Info, l("重新加入队列", "Queued again"));
                     inner.preview(&mut s, &id);
                 }
                 QueueOp::Remove { id } => {
                     if status(&s, &id)?.active() {
-                        return Err("进行中的任务要先取消".into());
+                        return Err(l("进行中的任务要先取消", "Cancel the running job first"));
                     }
                     s.jobs.retain(|j| j.id != id);
                 }
                 QueueOp::Move { id, delta } => {
-                    let i = s.jobs.iter().position(|j| j.id == id).ok_or("没有这个任务")?;
+                    let i = s
+                        .jobs
+                        .iter()
+                        .position(|j| j.id == id)
+                        .ok_or_else(|| tr!(lang, "没有这个任务：{}", "No such job: {}", id))?;
                     let k = i as i64 + i64::from(delta.signum());
                     if (0..s.jobs.len() as i64).contains(&k) {
                         s.jobs.swap(i, k as usize);

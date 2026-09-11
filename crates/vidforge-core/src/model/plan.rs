@@ -452,12 +452,29 @@ pub struct FpsInsight {
     pub target_fps: f64,
 }
 
+/// 命令段的类别。界面按语言显示它的名字
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SegmentKind {
+    Global,
+    Input,
+    Video,
+    Filter,
+    Fps,
+    Map,
+    Audio,
+    Subtitle,
+    Mux,
+    Output,
+}
+
 /// 命令的一段，界面按段换行展示
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ArgSegment {
-    pub label: String,
+    pub kind: SegmentKind,
     pub args: Vec<String>,
 }
 

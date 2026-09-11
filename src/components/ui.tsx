@@ -1,5 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
+import { tr } from "@/i18n";
 import { cn } from "@/lib/cn";
 import type { FeatureTone } from "@/lib/media-features";
 
@@ -334,6 +335,22 @@ export function Empty({
       </div>
       {action}
     </div>
+  );
+}
+
+/** 说明文字下面可展开的 ffmpeg 原文（需求 F-9.4：原始报错不直接抛给用户，但随时能看） */
+export function RawDetail({ text, className }: { text?: string; className?: string }) {
+  if (!text) return null;
+  return (
+    <details className={cn("group mt-0.5", className)}>
+      <summary className="w-fit cursor-pointer list-none text-[11px] text-subtle select-none hover:text-muted">
+        <span className="group-open:hidden">{tr("查看原文", "Show original")}</span>
+        <span className="hidden group-open:inline">{tr("收起原文", "Hide original")}</span>
+      </summary>
+      <pre className="selectable mt-1 rounded bg-sunken px-2 py-1.5 font-mono text-[10.5px] whitespace-pre-wrap break-all text-muted">
+        {text}
+      </pre>
+    </details>
   );
 }
 

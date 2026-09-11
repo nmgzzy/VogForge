@@ -6,7 +6,7 @@ describe("mock 后端", () => {
   it("非强制探测当作命中缓存，只报一次进度", async () => {
     const stages: string[] = [];
     const off = mockBackend.onProbeProgress((p) => stages.push(p.stage));
-    const caps = await mockBackend.getCapabilities(false);
+    const caps = await mockBackend.getCapabilities(false, "zh-CN");
     off();
     expect(stages).toEqual(["读取缓存"]);
     expect(caps.status).toBe("ready");
@@ -17,7 +17,7 @@ describe("mock 后端", () => {
     const stages: string[] = [];
     const off = mockBackend.onProbeProgress((p) => stages.push(p.stage));
     off();
-    await mockBackend.getCapabilities(false);
+    await mockBackend.getCapabilities(false, "zh-CN");
     expect(stages).toEqual([]);
   });
 

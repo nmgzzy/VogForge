@@ -86,6 +86,8 @@ pub struct Settings {
     pub notify: bool,
     pub language: Lang,
     pub theme: ThemePref,
+    /// 首次启动引导已经走完（需求 F-9.5）
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
@@ -104,6 +106,7 @@ impl Default for Settings {
             notify: true,
             language: Lang::ZhCn,
             theme: ThemePref::System,
+            onboarded: false,
         }
     }
 }
