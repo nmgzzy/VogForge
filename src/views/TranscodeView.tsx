@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { FileVideo } from "lucide-react";
+import { backend } from "@/backend";
 import { evaluate } from "@/mock/engine";
 import { useCapabilities } from "@/stores/capability";
 import { useProject, useSelected } from "@/stores/project";
@@ -62,9 +63,11 @@ export function TranscodeView() {
               title="还没有选择文件"
               description="在左侧添加视频后，这里会分析它的特征，按用途推荐参数，并告诉你哪些信息能保留。"
               action={
-                <Button variant="primary" size="sm" onClick={loadSamples}>
-                  载入示例素材
-                </Button>
+                backend.kind === "mock" && (
+                  <Button variant="primary" size="sm" onClick={loadSamples}>
+                    载入示例素材
+                  </Button>
+                )
               }
             />
           </div>

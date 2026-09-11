@@ -1,0 +1,29 @@
+{
+    "frames": [
+        {
+            "side_data_list": [
+                {
+                    "side_data_type": "Dolby Vision RPU Data"
+                },
+                {
+                    "side_data_type": "Dolby Vision Metadata",
+                    "rpu_type": 2,
+                    "rpu_format": 18,
+                    "vdr_rpu_profile": 1,
+                    "vdr_rpu_level": 0,
+                    "chroma_resampling_explicit_filter_flag": 0,
+                    "coef_data_type": 0,
+                    "coef_log2_denom": 23,
+                    "vdr_rpu_normalized_idc": 1,
+                    "bl_video_full_range_flag": 0,
+                    "bl_bit_depth": 10,
+                    "el_bit_depth": 10,
+                    "vdr_bit_depth": 12,
+                    "spatial_resampling_filter_flag": 0,
+                    "el_spatial_resampling_filter_flag": 0,
+                    "disable_residual_flag": 1
+                }
+            ]
+        }
+    ]
+}

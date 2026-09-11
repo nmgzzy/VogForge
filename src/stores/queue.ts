@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { backend } from "@/backend";
 import type { Job, JobEvent, MediaInfo, TranscodePlan } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
 import { isHardware } from "@/mock/engine/encoders";
@@ -37,8 +38,9 @@ function patch(jobs: Job[], id: string, fn: (j: Job) => Job): Job[] {
 }
 
 export const useQueue = create<QueueState>((set, get) => ({
-  jobs: seedJobs(),
-  selectedJobId: "job-run-cpu",
+  // 浏览器预览放几条演示任务；桌面应用从空队列开始
+  jobs: backend.kind === "mock" ? seedJobs() : [],
+  selectedJobId: backend.kind === "mock" ? "job-run-cpu" : undefined,
   concurrency: { cpu: 1, gpu: 1 },
   globalPaused: false,
 

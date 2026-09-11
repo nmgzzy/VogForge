@@ -1,11 +1,13 @@
-import { useState, type DragEvent } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import {
+  AlertTriangle,
   Camera,
   CloudDownload,
   Disc3,
   FilePlus2,
   FileVideo,
   FolderPlus,
+  Loader2,
   MonitorSmartphone,
   Plane,
   Smartphone,
@@ -14,14 +16,15 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { backend } from "@/backend";
 import type { MediaInfo, SourceHint } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { formatBytes, formatDuration, resolutionLabel } from "@/lib/format";
 import { mediaFeatures } from "@/lib/media-features";
 import { SCENARIOS } from "@/mock/engine";
 import { CODEC_LABEL } from "@/mock/engine/encoders";
-import { useProject } from "@/stores/project";
-import { Badge, Button, Empty } from "./ui";
+import { useProject, type ImportReport } from "@/stores/project";
+import { Badge, Button, Empty, ProgressBar } from "./ui";
 
 export const SOURCE_ICON: Record<SourceHint, LucideIcon> = {
   iphone: Smartphone,
@@ -38,6 +41,8 @@ export const SOURCE_ICON: Record<SourceHint, LucideIcon> = {
 function codecName(codec: string): string {
   return codec in CODEC_LABEL ? CODEC_LABEL[codec as keyof typeof CODEC_LABEL] : codec.toUpperCase();
 }
+
+const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
 function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; onSelect: () => void }) {
   const remove = useProject((s) => s.removeFile);
@@ -71,7 +76,7 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 pr-1">
-          <p className="min-w-0 flex-1 truncate text-[13px] font-medium" title={m.name}>
+          <p className="min-w-0 flex-1 truncate text-[13px] font-medium" title={m.path}>
             {m.name}
           </p>
           {scenarioTitle && (
@@ -108,65 +113,190 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
   );
 }
 
+/** 导入结果：有失败才醒目，只有跳过或重复时保持安静 */
+export function ImportReportCard({ report, onClose }: { report: ImportReport; onClose: () => void }) {
+  const failed = report.failures.length;
+  const facts = [
+    report.added > 0 && `已添加 ${report.added} 个`,
+    report.duplicate > 0 && `${report.duplicate} 个已在列表中`,
+    report.skipped > 0 && `跳过 ${report.skipped} 个非视频文件`,
+  ].filter(Boolean);
+  return (
+    <div
+      role={failed ? "alert" : "status"}
+      className={cn(
+        "mx-3 mt-3 rounded-md border px-3 py-2 text-xs",
+        failed ? "border-danger/30 bg-danger/6" : "border-line bg-sunken/60 text-muted",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        {failed > 0 && <AlertTriangle className="mt-px size-3.5 shrink-0 text-danger" />}
+        <div className="min-w-0 flex-1">
+          {failed > 0 && <p className="font-medium text-danger">{failed} 个文件无法分析</p>}
+          {facts.length > 0 && <p className={cn(failed > 0 && "mt-0.5 text-muted")}>{facts.join("，")}</p>}
+        </div>
+        <button onClick={onClose} aria-label="关闭导入结果" className="text-subtle hover:text-fg">
+          <X className="size-3.5" />
+        </button>
+      </div>
+      {failed > 0 && (
+        <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
+          {report.failures.map((f, i) => (
+            <li key={`${f.path}-${i}`} className="min-w-0">
+              {f.path && (
+                <p className="truncate font-medium text-fg" title={f.path}>
+                  {baseName(f.path)}
+                </p>
+              )}
+              <p className="break-all text-muted">{f.reason}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function FileList() {
   const files = useProject((s) => s.files);
   const selectedId = useProject((s) => s.selectedId);
   const select = useProject((s) => s.select);
   const loadSamples = useProject((s) => s.loadSamples);
+  const importPaths = useProject((s) => s.importPaths);
+  const importing = useProject((s) => s.importing);
+  const progress = useProject((s) => s.importProgress);
+  const queued = useProject((s) => s.importQueued);
+  const report = useProject((s) => s.importReport);
+  const dismissReport = useProject((s) => s.dismissImportReport);
   const clear = useProject((s) => s.clear);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState<string>();
+  const desktop = backend.kind === "tauri";
 
   const total = files.reduce((n, f) => n + f.sizeBytes, 0);
 
-  // 浏览器预览无法读取本地文件的真实路径，拖入时载入示例素材；Tauri 环境下由后端 probe
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
+  // 桌面应用：拖放由 Tauri 在窗口级别提供真实路径（WebView 里的 HTML5 拖放事件拿不到路径）
+  useEffect(() => {
+    if (!desktop) return;
+    return backend.onFileDrop({
+      over: () => setDragging(true),
+      leave: () => setDragging(false),
+      drop: (paths) => {
+        setDragging(false);
+        void importPaths(paths);
+      },
+    });
+  }, [desktop, importPaths]);
+
+  // 浏览器预览无法读取本地文件的真实路径，改为载入示例素材
+  const loadDemo = () => {
     loadSamples();
-    setNotice("浏览器预览模式无法读取本地文件，已载入示例素材。桌面版会直接分析拖入的文件。");
+    setNotice("浏览器预览模式无法读取本地文件，已载入示例素材。桌面版会直接分析选中的文件。");
     window.setTimeout(() => setNotice(undefined), 5000);
   };
+  const addFiles = async () => {
+    if (!desktop) return loadDemo();
+    void importPaths(await backend.pickFiles("添加视频文件"));
+  };
+  const addFolder = async () => {
+    if (!desktop) return loadDemo();
+    const dir = await backend.pickDirectory("添加文件夹（会递归扫描子文件夹）");
+    if (dir) void importPaths([dir]);
+  };
+
+  const html5Drop = desktop
+    ? {}
+    : {
+        onDragOver: (e: DragEvent) => {
+          e.preventDefault();
+          setDragging(true);
+        },
+        onDragLeave: (e: DragEvent) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false);
+        },
+        onDrop: (e: DragEvent) => {
+          e.preventDefault();
+          setDragging(false);
+          loadDemo();
+        },
+      };
 
   return (
-    <div
-      className="relative flex w-[288px] shrink-0 flex-col border-r border-line bg-bg"
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false);
-      }}
-      onDrop={onDrop}
-    >
+    <div className="relative flex w-[288px] shrink-0 flex-col border-r border-line bg-bg" {...html5Drop}>
       <header className="flex h-12 items-center gap-2 border-b border-line px-3">
         <h2 className="text-[13px] font-semibold">源文件</h2>
         {files.length > 0 && <span className="text-xs text-subtle tabular">{files.length}</span>}
         <div className="ml-auto flex gap-1">
-          <Button size="sm" variant="ghost" icon={<FilePlus2 className="size-3.5" />} onClick={loadSamples} title="添加文件">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<FilePlus2 className="size-3.5" />}
+            onClick={() => void addFiles()}
+            title="添加文件"
+          >
             文件
           </Button>
-          <Button size="sm" variant="ghost" icon={<FolderPlus className="size-3.5" />} onClick={loadSamples} title="添加文件夹（可递归）">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<FolderPlus className="size-3.5" />}
+            onClick={() => void addFolder()}
+            title="添加文件夹（可递归）"
+          >
             文件夹
           </Button>
         </div>
       </header>
 
+      {importing && (
+        <div className="border-b border-line px-3 py-2 text-xs text-muted" aria-live="polite">
+          <div className="flex items-center gap-2">
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            <span className="truncate">
+              {progress ? `正在分析 ${progress.done}/${progress.total}：${progress.current}` : "正在扫描文件…"}
+              {queued > 0 && `（另有 ${queued} 项排队）`}
+            </span>
+          </div>
+          {progress && progress.total > 0 && (
+            <div className="mt-1.5">
+              <ProgressBar value={(progress.done / progress.total) * 100} />
+            </div>
+          )}
+        </div>
+      )}
+
       {notice && (
         <div className="mx-3 mt-3 rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-accent">{notice}</div>
       )}
+      {report && <ImportReportCard report={report} onClose={dismissReport} />}
 
       <div className="flex-1 overflow-y-auto p-2">
         {files.length === 0 ? (
           <Empty
             icon={<Upload className="size-5" />}
             title="拖入视频或文件夹"
-            description="支持 MP4 / MOV / MKV / M2TS 等常见格式。文件夹会递归扫描，可按扩展名过滤。"
+            description="支持 MP4 / MOV / MKV / M2TS 等常见格式。文件夹会递归扫描，只收视频文件。"
             action={
-              <Button size="sm" variant="primary" onClick={loadSamples}>
-                载入示例素材
-              </Button>
+              desktop ? (
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon={<FilePlus2 className="size-3.5" />}
+                    onClick={() => void addFiles()}
+                    disabled={importing}
+                  >
+                    添加文件
+                  </Button>
+                  <Button size="sm" icon={<FolderPlus className="size-3.5" />} onClick={() => void addFolder()} disabled={importing}>
+                    添加文件夹
+                  </Button>
+                </div>
+              ) : (
+                <Button size="sm" variant="primary" onClick={loadSamples}>
+                  载入示例素材
+                </Button>
+              )
             }
           />
         ) : (

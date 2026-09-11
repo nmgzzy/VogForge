@@ -1,0 +1,99 @@
+{
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "av1",
+            "codec_long_name": "Alliance for Open Media AV1",
+            "profile": "Main",
+            "codec_type": "video",
+            "codec_tag_string": "[0][0][0][0]",
+            "codec_tag": "0x0000",
+            "mime_codec_string": "av01.0.05M.10.0.111.09.16.09.0",
+            "width": 1280,
+            "height": 720,
+            "coded_width": 1280,
+            "coded_height": 720,
+            "has_b_frames": 0,
+            "sample_aspect_ratio": "1:1",
+            "display_aspect_ratio": "16:9",
+            "pix_fmt": "yuv420p10le",
+            "level": 5,
+            "color_range": "tv",
+            "color_space": "bt2020nc",
+            "color_transfer": "smpte2084",
+            "color_primaries": "bt2020",
+            "chroma_location": "left",
+            "field_order": "progressive",
+            "r_frame_rate": "24/1",
+            "avg_frame_rate": "24/1",
+            "time_base": "1/1000",
+            "start_pts": 0,
+            "start_time": "0.000000",
+            "extradata_size": 21,
+            "disposition": {
+                "default": 0,
+                "dub": 0,
+                "original": 0,
+                "comment": 0,
+                "lyrics": 0,
+                "karaoke": 0,
+                "forced": 0,
+                "hearing_impaired": 0,
+                "visual_impaired": 0,
+                "clean_effects": 0,
+                "attached_pic": 0,
+                "timed_thumbnails": 0,
+                "non_diegetic": 0,
+                "captions": 0,
+                "descriptions": 0,
+                "metadata": 0,
+                "dependent": 0,
+                "still_image": 0,
+                "multilayer": 0
+            },
+            "tags": {
+                "ENCODER": "Lavc63.1.101 libsvtav1",
+                "DURATION": "00:00:02.000000000"
+            },
+            "side_data_list": [
+                {
+                    "side_data_type": "Content light level metadata",
+                    "max_content": 1000,
+                    "max_average": 400
+                },
+                {
+                    "side_data_type": "Mastering display metadata",
+                    "red_x": "17/25",
+                    "red_y": "8/25",
+                    "green_x": "53/200",
+                    "green_y": "69/100",
+                    "blue_x": "3/20",
+                    "blue_y": "3/50",
+                    "white_point_x": "3127/10000",
+                    "white_point_y": "329/1000",
+                    "min_luminance": "1/10000",
+                    "max_luminance": "1000/1"
+                }
+            ]
+        }
+    ],
+    "chapters": [
+
+    ],
+    "format": {
+        "filename": "hdr10-av1.mkv",
+        "nb_streams": 1,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "matroska,webm",
+        "format_long_name": "Matroska / WebM",
+        "start_time": "0.000000",
+        "duration": "2.000000",
+        "size": "514323",
+        "bit_rate": "2057292",
+        "probe_score": 100,
+        "tags": {
+            "ENCODER": "Lavf63.1.101"
+        }
+    }
+}

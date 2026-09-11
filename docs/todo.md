@@ -1,6 +1,6 @@
 # VidForge TODO
 
-更新于 2026-09-11（阶段 2 完成）
+更新于 2026-09-11（阶段 3 完成）
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [计划](plan.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
@@ -109,23 +109,33 @@
 
 ## 阶段 3：媒体分析
 
-- [ ] `probe.rs`：调用 ffprobe `-show_format -show_streams -show_chapters -of json`
-- [ ] 视频流：编码、分辨率、位深、像素格式、色彩特性、旋转
-- [ ] HDR 识别：HDR10 / HLG / PQ 无元数据
-- [ ] HDR10 元数据：MDCV 与 CLL，**有理数求值为 f64**（HEVC 与 AV1 分母不同）
-- [ ] 杜比视界：从 stream side data 读 profile、bl_compat_id、是否有 EL
-- [ ] HDR10+ 识别
-- [ ] 音频：编码、声道布局、无损判定、Atmos 判定（TrueHD / E-AC-3 JOC）、DTS:X 判定
-- [ ] 字幕：图形字幕判定（PGS / VobSub）
-- [ ] 章节与附件
-- [ ] VFR 两级判定：判据 1 帧率字段、判据 2 采样 `duration_time`（需过滤 SEI 行）
-- [ ] 设备来源推断：make / model / encoder 标签
-- [ ] 文件导入：拖拽、批量、文件夹递归、扩展名过滤
-- [ ] 测试
-  - [ ] fixture：手机 HDR、iPhone DV 8.4、多音轨 MKV、VFR MP4、VFR MKV、蓝光 remux
-  - [ ] 有理数求值：`"10000000/10000"` 与 `"256000/256"` 都等于 1000.0
-  - [ ] VFR：MP4 靠判据 1 命中，MKV 靠判据 2 命中
-  - [ ] 字段缺失或 `N/A` 时不崩溃
+状态：已完成。桌面应用可以拖入或选择文件与文件夹，由 ffprobe 分析后进入转码页。
+
+- [x] `probe.rs`：每个文件三次 ffprobe（流与章节、首帧 side data 与色彩、前 120 个包的时间戳）
+- [x] 视频流：编码、分辨率、位深、像素格式、色彩特性、旋转（Display Matrix）
+- [x] 色彩字段流级缺失时从首帧读取（x265 只写 VUI 的片源，否则会把 HDR10 误判成 SDR）
+- [x] HDR 识别：HDR10 / HLG / PQ 无元数据
+- [x] HDR10 元数据：MDCV 与 CLL，**有理数求值为 f64**（HEVC 与 AV1 分母不同，AV1 流级还会约分）
+- [x] 杜比视界：从 stream side data 读 profile、bl_compat_id、是否有 EL；EL 类型看 RPU 的 disable_residual_flag
+- [x] HDR10+ 识别
+- [x] 音频：编码、声道布局、无损判定、Atmos 判定（TrueHD / E-AC-3 JOC）、DTS:X 判定
+- [x] 字幕：图形字幕判定（PGS / VobSub / DVB）
+- [x] 章节与附件（MP4 封面图算附件，不算视频流）
+- [x] VFR 两级判定：判据 1 帧率字段、判据 2 包时间戳间隔（原计划的 `duration_time` 在 MKV 里是常数，已改）
+- [x] 设备来源推断：make / model / encoder / handler 标签与文件名
+- [x] 文件导入：拖拽（Tauri 窗口级拖放）、多选、文件夹递归、扩展名过滤、跳过隐藏与系统目录（含 Windows 隐藏属性、NAS 上的 `._` 资源分叉文件）
+- [x] 导入结果：失败原因中文化（保留原文）、跳过数、重复数；全部成功时不打扰；读不了的文件夹记为失败
+- [x] 导入进行中再拖入的文件排队处理，结果合并
+- [x] 纯音频文件拒绝导入并说明原因；封面图排在前面时按流序号采样真实视频流
+- [x] 桌面应用从空列表开始；浏览器预览仍载入示例素材
+- [x] 测试
+  - [x] fixture：手机 HDR10（HEVC / AV1）、HLG 手机（带旋转与设备标签）、iPhone DV 8.4、多音轨 MKV、VFR MP4、VFR MKV、23.976 CFR MKV、相机、蓝光 remux（DV P7 FEL + Atmos + PGS）
+  - [x] 有理数求值：`"10000000/10000"`、`"256000/256"`、`"1000/1"` 都等于 1000.0
+  - [x] VFR：MP4 靠判据 1 命中，MKV 靠判据 2 命中，23.976 毫秒取整不误判
+  - [x] 字段缺失或 `N/A` 时不崩溃
+  - [x] `tests/media_real.rs`：用真实 ffmpeg 合成 7 个素材 + 损坏文件 + 非视频文件，走完整导入流程核对
+  - [x] 前端：导入 store（成功、失败、重复）、导入结果卡片
+  - [x] 桌面端到端：在真实窗口里导入合成素材目录，特征徽章与推荐正确
 
 ## 阶段 4：命令构建与容器矩阵
 
@@ -148,6 +158,7 @@
   - [ ] 按需追加 `-af aresample=async=1`
   - [ ] 预估复制/丢弃帧数
 - [ ] `color.rs`：色调映射管线选择与滤镜字符串生成（libplacebo / tonemap_opencl / zscale / scale_vt）
+- [ ] 色彩标签不依赖 `-color_primaries` / `-color_trc` 输出选项（9.0 不生效，见技术事实 12 节），需要时用 `setparams`
 - [ ] `audio.rs`：copy / 编码 / 双轨策略 / `pan` 降混 / loudnorm 两遍
 - [ ] `container.rs`：编码 × 容器兼容矩阵
 - [ ] 快照测试（`insta`），至少覆盖：

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { backend } from "@/backend";
 import { Sidebar } from "@/components/Sidebar";
 import { useCapabilities } from "@/stores/capability";
 import { useProject } from "@/stores/project";
@@ -34,9 +35,9 @@ export default function App() {
     });
   }, []);
 
-  // 预览模式：载入示例素材，并驱动队列的模拟进度
+  // 浏览器预览载入示例素材；桌面应用从空列表开始。队列的模拟进度在阶段 6 接入真实执行前两边都要推进
   useEffect(() => {
-    if (useProject.getState().files.length === 0) useProject.getState().loadSamples();
+    if (backend.kind === "mock" && useProject.getState().files.length === 0) useProject.getState().loadSamples();
     const id = window.setInterval(() => useQueue.getState().tick(0.5), 500);
     return () => window.clearInterval(id);
   }, []);

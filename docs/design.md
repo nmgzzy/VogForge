@@ -93,6 +93,17 @@ MediaInfo
 
 `Hdr10Metadata` 的亮度与色度值一律存为 `f64`（已求值），不保留 `"34000/50000"` 这类有理数字符串。原因见技术事实文档第 2 节：HEVC 与 AV1 的定点分母不同，字符串比对必然误判。
 
+实现补充（`model/media.rs`、`ffmpeg/probe.rs`）：
+
+- `id` 由规范化路径派生（Windows 下大小写不敏感），同一文件重复导入得到同一个 id，列表据此去重。
+- `import_root` 记录通过文件夹导入时的根目录，"保留源目录结构"据此计算相对路径。
+- 色彩字段优先取流级，流级是 unknown 时取解码出的首帧（技术事实文档 12 节）；HDR10 元数据优先取首帧 side data，其次流级。
+- 杜比视界增强层类型（MEL / FEL）只能从 RPU 看出，读首帧 `Dolby Vision Metadata` 里的 `disable_residual_flag`。
+- 首帧与包的采样按流序号选第一条真实视频流：MP4 的封面图也是 `codec_type=video`，`v:0` 可能选中它。
+- 没有视频流的文件（纯音频、只有封面图）拒绝导入：命令构建以视频为中心，放进来只会得到跑不起来的命令。
+
+导入（`import.rs`）：拖入或选中的文件按用户意图直接分析；文件夹递归扫描，只收视频扩展名，跳过以点开头的条目（含 macOS 在 NAS 上留下的 `._` 资源分叉文件）、回收站、系统卷信息与 Windows 隐藏/系统属性的条目，不跟随目录符号链接。读不了的文件夹记为失败而不是当成空目录。4 路并发分析；分析进行中再拖入的路径排队，当前批次完成后接着处理，结果合并成一份报告。
+
 ### 3.2 TranscodePlan —— 一次转码的完整描述
 
 ```
@@ -422,17 +433,15 @@ matroska 的帧率字段从 `default_duration` 推导，不反映实际帧间隔
 
 ```
 判据 1：|r_frame_rate - avg_frame_rate| / r_frame_rate > 1%
-判据 2：采样前 120 帧的 duration_time，
-        不同取值数 > 1 且 标准差/均值 > 1%
+判据 2：前 120 个视频包的 pts_time 排序后求间隔，
+        偏离中位数 20% 以上的间隔 ≥ 2 个且占比 ≥ 2%
 ```
 
-判据 2 的采样命令：
+判据 2 不能用 `duration_time`：MKV 里它也取自 `default_duration`，对可变帧率内容同样是常数；阈值也不能用变异系数，毫秒取整会让 23.976 fps 的电影误判。细节与实测数据见技术事实文档 4.2 节。采样命令：
 
 ```bash
-ffprobe -v error -select_streams v:0 -read_intervals "%+4" -show_frames         -show_entries frame=duration_time -of csv=p=0 input.mp4
+ffprobe -v error -select_streams v:0 -read_intervals "%+#120" -show_packets -show_entries packet=pts_time -of csv=p=0 input.mkv
 ```
-
-输出里会混入 SEI side data 行，解析时需过滤非数值行。
 
 ### 5.3 色调映射管线选择
 

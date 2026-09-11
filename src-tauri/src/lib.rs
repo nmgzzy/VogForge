@@ -21,6 +21,7 @@ pub fn run() {
             commands::get_capabilities,
             commands::get_settings,
             commands::save_settings,
+            commands::import_media,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,7 +2,7 @@
 
 Windows / macOS 桌面视频转码工具。后端调用系统 ffmpeg，按用途自动推荐参数，并能判断、保留、核对杜比视界、HDR、杜比全景声等高价值信息。
 
-当前处于**阶段 2 完成**：Rust 核心库能定位 ffmpeg 并做三层能力探测（编译能力、硬件设备初始化、真实试编码），桌面应用的环境页显示真实结果。转码页的推荐与命令生成暂时仍由前端 mock 引擎驱动，阶段 3–5 逐步迁到 Rust。
+当前处于**阶段 3 完成**：Rust 核心库能定位 ffmpeg、做三层能力探测（编译能力、硬件设备初始化、真实试编码），并用 ffprobe 分析拖入的文件与文件夹（HDR10 / HLG / 杜比视界 / 全景声 / 无损音轨 / 图形字幕 / 可变帧率 / 拍摄设备）。转码页的推荐与命令生成暂时仍由前端 mock 引擎驱动，阶段 4–5 迁到 Rust。
 
 ## 文档
 
@@ -36,7 +36,7 @@ pnpm bindings     # 改了 Rust 模型后重新生成 src/bindings/ 下的 TS �
 ```
 
 - 前端测试的重点是 mock 引擎：遍历全部示例素材 × 全部场景，断言 `docs/ffmpeg-facts.md` 中的每条技术事实在生成的命令里都成立。
-- Rust 测试用本机采集的真实 ffmpeg 输出（gyan full 9.0.1、essentials 9.0.1、6.0）做解析与分类测试；`tests/probe_real.rs` 在真实 ffmpeg 上跑完整探测，找不到时自动跳过。能力受限与旧版本构建通过环境变量 `VIDFORGE_TEST_FFMPEG_ESSENTIALS`、`VIDFORGE_TEST_FFMPEG_OLD` 指定。
+- Rust 测试用本机采集的真实 ffmpeg / ffprobe 输出做解析与分类测试（`crates/vidforge-core/tests/fixtures/`）。两个集成测试在真实 ffmpeg 上运行，找不到时自动跳过：`probe_real.rs` 跑完整能力探测，能力受限与旧版本构建通过环境变量 `VIDFORGE_TEST_FFMPEG_ESSENTIALS`、`VIDFORGE_TEST_FFMPEG_OLD` 指定；`media_real.rs` 合成一批测试素材再走完整导入流程。
 - 桌面应用端到端：以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 pnpm tauri dev` 启动后，用 `node scripts/tauri-cdp.mjs` 驱动窗口与截图（仅 Windows）。
 
 ## 目录

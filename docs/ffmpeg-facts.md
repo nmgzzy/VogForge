@@ -41,9 +41,14 @@ ffprobe 返回的是有理数字符串。分母随编码格式变化 **[实测]*
 | 格式 | 色度/白点 | max/min luminance | 1000 nits 的实际呈现 |
 |---|---|---|---|
 | HEVC | /50000 | /10000 | `"10000000/10000"` |
-| AV1 (libsvtav1) | /65536 | /256 | `"256000/256"` |
+| AV1 (libsvtav1) | /65536 | max /256，min /16384 | `"256000/256"` |
 
 本机验证方式：同一个 HDR10 源分别用 libx265 与 libsvtav1 编码，ffprobe 读出的 `max_luminance` 分别是上表两个值，都等于 1000 nits。
+
+另外两个坑 **[实测]**（阶段 3 做媒体分析时发现）：
+
+- AV1 的最低亮度是 Q18.14 定点，源里的 0.0001 nits 会被量化成 `"2/16384"` ≈ 0.000122。比较最低亮度时容差要放宽到 5e-5 量级，否则 HEVC 转 AV1 后会误报"元数据变了"。
+- 同一个 AV1 文件，帧级 side data 是 `"256000/256"`，而 MKV 容器里的流级 side data 已被约分成 `"1000/1"`、`"17/25"`。所以连"只比分子"都不可行，必须求值。
 
 **实现要求**：
 
@@ -77,11 +82,12 @@ BT.2020 母版，1000 nits：
 ### 2.4 HLG
 
 ```bash
--color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc -color_range tv
+-vf "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv"
 ```
 
 要点：
 
+- 9.0 起 `-color_primaries` / `-color_trc` 输出选项不会写进输出，要用 `setparams` 滤镜给帧打标签（见第 12 节）。重编码 HLG 源时标签随帧沿用，不需要这一步。
 - ffmpeg 的枚举名是 `arib-std-b67`（即 BT.2100 HLG）。
 - HLG **不需要** MaxCLL / MDCV（那是 PQ 的东西，HLG 是 display-referred）。硬写上去部分电视会误判。
 - iPhone 等设备拍的 HLG 素材通常同时是杜比视界 Profile 8.4。只要 HLG 不要 DV 时必须显式 `-dolbyvision 0`。
@@ -196,22 +202,24 @@ ffmpeg -i in.mkv -c copy -bsf:v dovi_rpu=strip=1 out.mkv
 
 明显不恒定。
 
+**但 `duration_time` 在 MKV 里不可用 [实测]**（阶段 3 修正）：同一份可变帧率内容封装成 MKV 后，每帧、每包的 `duration_time` 全是 `0.033000`，因为它同样取自 `default_duration`。真正反映帧间隔的是时间戳：同一个 MKV 的包 `pts_time` 在 2.0 秒前每隔 0.033 递增，之后每隔 0.1 递增。所以第二级判据必须看**时间戳间隔**，不能看时长字段。
+
 **实现要求**：VFR 判定用两级判据，任一命中即判为 VFR。
 
 ```
 1. r_frame_rate 与 avg_frame_rate 相对差异 > 1%
-2. 采样前 N 帧（建议 120 帧）的 duration_time，
-   若不同取值个数 > 1 且标准差 / 均值 > 1%，判为 VFR
+2. 取前 120 个视频包的 pts_time，排序后求相邻差值；
+   与中位数相差 20% 以上的间隔至少 2 个、且占比 ≥ 2%，判为 VFR
 ```
 
-采样命令：
+采样命令（读包不解码，比读帧快；有 B 帧时包的时间戳是乱序的，所以要先排序）：
 
 ```bash
-ffprobe -v error -select_streams v:0 -read_intervals "%+4" -show_frames \
-        -show_entries frame=duration_time -of csv=p=0 input.mp4
+ffprobe -v error -select_streams v:0 -read_intervals "%+#120" -show_packets \
+        -show_entries packet=pts_time -of csv=p=0 input.mkv
 ```
 
-注意输出里会混入 SEI side data 行，解析时需过滤非数值行。
+阈值不能用"标准差 / 均值 > 1%"。MKV 时间戳是毫秒精度，23.976 fps 的固定帧率间隔会在 41 ms 与 42 ms 之间跳，变异系数约 1.2%，按 1% 判会把普通电影误判成 VFR。"偏离中位数 20%"只对真正的帧率跳变敏感；"至少 2 个"避免个别丢帧误报。
 
 ### 4.3 VFR 转 CFR：三种方案实测对比
 
@@ -672,3 +680,22 @@ MP4 输出的固定附加参数：`-tag:v hvc1`（HEVC）、`-movflags +faststar
 本机具备 v1 与 v2 全部功能的验证条件，唯独缺 NVIDIA 与 AMD 显卡，相关代码路径只能靠错误分类逻辑的单元测试覆盖。
 
 **不能用这台机器的配置假设用户环境**。开发期应准备一个能力受限的 ffmpeg（例如 gyan essentials）用于测试降级路径。
+
+## 12. 色彩标签（阶段 3 实测）
+
+以下均为 **[实测]**，ffmpeg 9.0.1。
+
+**`-color_primaries` / `-color_trc` 输出选项不生效。** 用 lavfi 生成的帧（色彩属性未指定）编码时加上 `-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc`，输出里只有 `color_space` 生效，`color_primaries` 与 `color_transfer` 都是 unknown；换成 `-color_primaries:v` 也一样。原因是编码器的色彩属性取自帧，而 7.1 起只有 colorspace 与 range 参与滤镜图协商。
+
+| 做法 | primaries / transfer 是否写入 |
+|---|---|
+| `-color_primaries` / `-color_trc` 输出选项 | 否 |
+| `-vf setparams=color_primaries=...:color_trc=...:colorspace=...` | 是 |
+| 色调映射滤镜（libplacebo、zscale）指定输出色彩 | 是，滤镜会给帧打标签 |
+| 重编码 HDR 源、不改色彩 | 是，沿用解码出的帧属性 |
+
+**实现要求**：命令构建不依赖这两个输出选项。需要显式打标签时用 `setparams`；色调映射后由滤镜负责；保留 HDR 时什么都不用传。
+
+**流级色彩字段可能是 unknown，而帧里有值。** 用 x265 的 `-x265-params colorprim=...:transfer=...` 编码的 MKV，色彩只写在 HEVC 码流的 VUI 里，容器没有 Colour 元素，ffprobe `-show_streams` 里 `color_transfer` 与 `color_primaries` 缺失；解码出的首帧则是 `smpte2084` / `bt2020`。媒体分析只看流级字段会把这种 HDR10 片源误判成 SDR，所以分析时要读首帧的 `color_*` 字段兜底（设计文档 5.2 节的首帧采样顺带完成）。
+
+**旋转写在 Display Matrix 里。** 手机竖拍视频的编码尺寸仍是横向（如 1920×1080），`side_data_list` 里的 `Display Matrix` 带 `"rotation": -90`。转码时 ffmpeg 默认自动旋转，流复制时保留这条 side data。

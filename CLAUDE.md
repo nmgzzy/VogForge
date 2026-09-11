@@ -6,7 +6,7 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 
 ## 当前阶段
 
-阶段 0–2 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测都已接通，环境页和设置页用的是真实后端。转码页的推荐、保真度求解和命令生成仍由前端 mock 引擎 `src/mock/engine/` 驱动，阶段 3–5 逐步迁到 Rust。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
+阶段 0–3 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入都已接通。转码页的推荐、保真度求解和命令生成仍由前端 mock 引擎 `src/mock/engine/` 驱动，吃的是真实的能力与媒体数据，阶段 4–5 迁到 Rust。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
 
 ## 常用命令
 
@@ -26,9 +26,9 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 
 前端没有配置 ESLint / Prettier。tsconfig 开了 `strict`、`noUncheckedIndexedAccess`、`noUnusedLocals/Parameters`，类型检查就是 lint。路径别名 `@/` 指向 `src/`。
 
-`crates/vidforge-core/tests/probe_real.rs` 在真实 ffmpeg 上跑完整探测：默认找开发机的 `C:\Program1\ffmpeg\bin`，找不到就跳过；`VIDFORGE_TEST_FFMPEG_ESSENTIALS`、`VIDFORGE_TEST_FFMPEG_OLD` 指向能力受限与低于 7.1 的构建时才跑对应用例。只有 Intel 显卡的机器会额外核对开发机基线，其他机器设 `VIDFORGE_SKIP_BASELINE` 跳过。
+`crates/vidforge-core/tests/media_real.rs` 用真实 ffmpeg 合成素材再走完整导入流程，也是 `tests/fixtures/probe/` 里真实 fixture 的生成方法（fixture 来源见该目录的 README）。`tests/probe_real.rs` 在真实 ffmpeg 上跑完整探测：默认找开发机的 `C:\Program1\ffmpeg\bin`，找不到就跳过；`VIDFORGE_TEST_FFMPEG_ESSENTIALS`、`VIDFORGE_TEST_FFMPEG_OLD` 指向能力受限与低于 7.1 的构建时才跑对应用例。只有 Intel 显卡的机器会额外核对开发机基线，其他机器设 `VIDFORGE_SKIP_BASELINE` 跳过。
 
-桌面应用端到端自测（仅 Windows）：用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 pnpm tauri dev` 启动，再用 `node scripts/tauri-cdp.mjs wait:文本 click:文本 fill:占位|值 shot:文件.png eval:表达式` 驱动窗口并截图。原生文件对话框无法通过它操作，需要选路径时改在设置页的文本框里填。
+桌面应用端到端自测（仅 Windows）：用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 pnpm tauri dev` 启动，再用 `node scripts/tauri-cdp.mjs wait:文本 click:文本 fill:占位|值 shot:文件.png eval:表达式` 驱动窗口并截图。原生文件对话框与拖放无法通过它操作：开发模式下 store 挂在 `window.__vidforge` 上，可以用 `eval:` 直接调 `window.__vidforge.useProject.getState().importPaths([...])`（走的仍是真实 Tauri 命令）。不要用 `import('/src/stores/…')`，热更新后模块地址带时间戳，会拿到另一个 store 实例。
 
 ## 架构
 

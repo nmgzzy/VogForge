@@ -5,3 +5,4 @@ pub mod classify;
 pub mod exec;
 pub mod locate;
 pub mod parse;
+pub mod probe;

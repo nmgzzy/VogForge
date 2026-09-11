@@ -7,9 +7,22 @@
 
 import type { Codec } from "@/bindings/Codec";
 import type { EncoderId } from "@/bindings/EncoderId";
+import type { MediaInfo } from "@/bindings/MediaInfo";
 import type { ToneMapPipeline } from "@/bindings/ToneMapPipeline";
 
 export type { AfterAction } from "@/bindings/AfterAction";
+export type { AudioStream } from "@/bindings/AudioStream";
+export type { ColorInfo } from "@/bindings/ColorInfo";
+export type { DoviInfo } from "@/bindings/DoviInfo";
+export type { Hdr10Metadata } from "@/bindings/Hdr10Metadata";
+export type { HdrKind } from "@/bindings/HdrKind";
+export type { ImportFailure } from "@/bindings/ImportFailure";
+export type { ImportProgress } from "@/bindings/ImportProgress";
+export type { ImportResult } from "@/bindings/ImportResult";
+export type { MediaInfo } from "@/bindings/MediaInfo";
+export type { SourceHint } from "@/bindings/SourceHint";
+export type { SubtitleStream } from "@/bindings/SubtitleStream";
+export type { VideoStream } from "@/bindings/VideoStream";
 export type { BuildFlag } from "@/bindings/BuildFlag";
 export type { Capabilities } from "@/bindings/Capabilities";
 export type { Codec } from "@/bindings/Codec";
@@ -29,111 +42,6 @@ export type { Settings } from "@/bindings/Settings";
 export type { ToneMapPipeline } from "@/bindings/ToneMapPipeline";
 export type { TonemapProbe } from "@/bindings/TonemapProbe";
 export type { Vendor } from "@/bindings/Vendor";
-
-// ───────────────────────── 媒体分析 ─────────────────────────
-
-export type HdrKind = "none" | "hdr10" | "hlg" | "pq_no_meta";
-
-/** HDR10 静态元数据。数值一律为已求值的浮点（nits），不保留有理数字符串。 */
-export interface Hdr10Metadata {
-  maxLuminance: number;
-  minLuminance: number;
-  maxCll?: number;
-  maxFall?: number;
-  masteringPrimaries: "p3" | "bt2020" | "unknown";
-}
-
-export interface DoviInfo {
-  /** 5 / 7 / 8 / 10 */
-  profile: number;
-  /** 8.1 → 1，8.4 → 4，P5 → 0 */
-  blCompatId: number;
-  hasEnhancementLayer: boolean;
-  elType?: "MEL" | "FEL";
-}
-
-export interface ColorInfo {
-  primaries: string;
-  transfer: string;
-  space: string;
-  range: "tv" | "pc";
-  hdrKind: HdrKind;
-}
-
-export interface VideoStream {
-  index: number;
-  codec: string;
-  profile?: string;
-  width: number;
-  height: number;
-  /** 实际平均帧率 */
-  fpsAvg: number;
-  /** 名义帧率（r_frame_rate） */
-  fpsNominal: number;
-  isVfr: boolean;
-  bitDepth: 8 | 10 | 12;
-  pixFmt: string;
-  bitrate?: number;
-  color: ColorInfo;
-  hdr10?: Hdr10Metadata;
-  dolbyVision?: DoviInfo;
-  hdr10plus: boolean;
-  rotation: number;
-  frameCount?: number;
-}
-
-export interface AudioStream {
-  index: number;
-  codec: string;
-  profile?: string;
-  channels: number;
-  channelLayout: string;
-  sampleRate: number;
-  bitrate?: number;
-  language?: string;
-  title?: string;
-  isDefault: boolean;
-  lossless: boolean;
-  atmos: boolean;
-  dtsX: boolean;
-}
-
-export interface SubtitleStream {
-  index: number;
-  codec: string;
-  language?: string;
-  title?: string;
-  imageBased: boolean;
-}
-
-export type SourceHint =
-  | "iphone"
-  | "android"
-  | "gopro"
-  | "dji"
-  | "camera"
-  | "screen"
-  | "bluray"
-  | "streaming"
-  | "unknown";
-
-export interface MediaInfo {
-  id: string;
-  path: string;
-  name: string;
-  container: string;
-  durationSec: number;
-  sizeBytes: number;
-  /** 总码率 bps */
-  bitrate: number;
-  video: VideoStream[];
-  audio: AudioStream[];
-  subtitle: SubtitleStream[];
-  chapters: number;
-  attachments: number;
-  sourceHint: SourceHint;
-  device?: string;
-}
 
 // ───────────────────────── 转码计划 ─────────────────────────
 

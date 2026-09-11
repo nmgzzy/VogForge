@@ -4,7 +4,7 @@
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [TODO](todo.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
-当前进度：阶段 0–2 已完成，达到里程碑 M2（环境可知）。逐项状态见 [TODO](todo.md)。
+当前进度：阶段 0–3 已完成，达到里程碑 M2（环境可知），M3 的前半段（媒体分析）已就绪。逐项状态见 [TODO](todo.md)。
 
 ## 总体策略
 

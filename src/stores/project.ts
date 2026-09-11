@@ -1,16 +1,35 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import type { MediaInfo, Scenario, TranscodePlan } from "@/lib/types";
+import { backend } from "@/backend";
+import type { ImportFailure, ImportProgress, MediaInfo, Scenario, TranscodePlan } from "@/lib/types";
 import { MOCK_MEDIA } from "@/mock/media";
 import { applyFix as engineApplyFix, recommendPlan, suggestScenario, updatePlan } from "@/mock/engine";
 import { useCapabilities } from "./capability";
+
+export interface ImportReport {
+  failures: ImportFailure[];
+  /** 文件夹里扩展名不像视频、被跳过的文件数 */
+  skipped: number;
+  added: number;
+  /** 已在列表里、没有重复添加的文件数 */
+  duplicate: number;
+}
 
 interface ProjectState {
   files: MediaInfo[];
   selectedId?: string;
   plans: Record<string, TranscodePlan>;
+  importing: boolean;
+  importProgress?: ImportProgress;
+  /** 分析进行中又加入、正在排队的路径数 */
+  importQueued: number;
+  /** 最近一次导入里需要告诉用户的事（失败、跳过、重复）；没有就是 undefined */
+  importReport?: ImportReport;
 
   addFiles: (files: MediaInfo[]) => void;
+  /** 分析文件与文件夹并加入列表 */
+  importPaths: (paths: string[]) => Promise<void>;
+  dismissImportReport: () => void;
   loadSamples: () => void;
   removeFile: (id: string) => void;
   clear: () => void;
@@ -28,6 +47,9 @@ interface ProjectState {
 
 const caps = () => useCapabilities.getState().caps;
 
+/** 导入进行中又加入的路径 */
+const pendingImports: string[] = [];
+
 export const useProject = create<ProjectState>((set, get) => ({
   files: [],
   plans: {},
@@ -44,6 +66,53 @@ export const useProject = create<ProjectState>((set, get) => ({
         selectedId: s.selectedId ?? fresh[0]?.id,
       };
     }),
+
+  importing: false,
+  importQueued: 0,
+
+  importPaths: async (paths) => {
+    if (paths.length === 0) return;
+    // 分析进行中又拖进来的文件排队，当前这批完成后接着处理，结果合并成一份报告
+    if (get().importing) {
+      pendingImports.push(...paths);
+      set({ importQueued: pendingImports.length });
+      return;
+    }
+    set({ importing: true, importProgress: undefined, importReport: undefined });
+    const total: ImportReport = { failures: [], skipped: 0, added: 0, duplicate: 0 };
+    let firstNew: string | undefined;
+    const off = backend.onImportProgress((importProgress) => set({ importProgress }));
+    try {
+      for (let batch = paths; batch.length > 0; batch = pendingImports.splice(0)) {
+        set({ importQueued: pendingImports.length });
+        try {
+          const r = await backend.importMedia(batch);
+          const known = new Set(get().files.map((f) => f.id));
+          const fresh = r.media.filter((m) => !known.has(m.id));
+          get().addFiles(r.media);
+          firstNew ??= fresh[0]?.id;
+          total.failures.push(...r.failures);
+          total.skipped += r.skipped;
+          total.added += fresh.length;
+          total.duplicate += r.media.length - fresh.length;
+        } catch (e) {
+          total.failures.push({ path: "", reason: e instanceof Error ? e.message : String(e) });
+        }
+      }
+    } finally {
+      off();
+      const worthTelling = total.failures.length > 0 || total.skipped > 0 || total.duplicate > 0;
+      set({
+        importing: false,
+        importProgress: undefined,
+        importQueued: 0,
+        importReport: worthTelling ? total : undefined,
+        ...(firstNew ? { selectedId: firstNew } : {}),
+      });
+    }
+  },
+
+  dismissImportReport: () => set({ importReport: undefined }),
 
   loadSamples: () => get().addFiles(MOCK_MEDIA),
 

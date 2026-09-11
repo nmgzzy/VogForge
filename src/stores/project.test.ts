@@ -80,3 +80,55 @@ describe("project store", () => {
     expect(state().selectedId).toBeUndefined();
   });
 });
+
+describe("导入文件（经 Backend 接口）", () => {
+  beforeEach(() => {
+    useProject.setState({ files: [], plans: {}, selectedId: undefined, importReport: undefined, importing: false });
+  });
+
+  it("分析成功的文件加入列表并选中第一个新文件；全部成功时不打扰用户", async () => {
+    await state().importPaths(["IMG_4521.MOV", "C0087.MP4"]);
+    const s = state();
+    expect(s.files.map((f) => f.id)).toEqual(["m-iphone", "m-camera"]);
+    expect(s.selectedId).toBe("m-iphone");
+    expect(s.importReport).toBeUndefined();
+    expect(s.importing).toBe(false);
+  });
+
+  it("失败与重复都写进导入结果", async () => {
+    await state().importPaths(["IMG_4521.MOV"]);
+    await state().importPaths(["IMG_4521.MOV", "D:/clips/broken.mp4"]);
+    const r = state().importReport!;
+    expect(r.added).toBe(0);
+    expect(r.duplicate).toBe(1);
+    expect(r.failures).toEqual([{ path: "D:/clips/broken.mp4", reason: "文件不完整或已损坏（moov atom not found）" }]);
+    state().dismissImportReport();
+    expect(state().importReport).toBeUndefined();
+  });
+
+  it("空列表不发起导入", async () => {
+    await state().importPaths([]);
+    expect(state().files).toHaveLength(0);
+    expect(state().importReport).toBeUndefined();
+  });
+});
+
+describe("导入进行中又拖入的文件", () => {
+  beforeEach(() => {
+    useProject.setState({ files: [], plans: {}, selectedId: undefined, importReport: undefined, importing: false, importQueued: 0 });
+  });
+
+  it("排队到当前这批之后处理，结果合并成一份报告，不会被静默丢弃", async () => {
+    const first = state().importPaths(["IMG_4521.MOV"]);
+    const second = state().importPaths(["C0087.MP4", "D:/clips/broken.mp4"]);
+    expect(state().importQueued).toBe(2);
+    await Promise.all([first, second]);
+    const s = state();
+    expect(s.files.map((f) => f.id)).toEqual(["m-iphone", "m-camera"]);
+    expect(s.importing).toBe(false);
+    expect(s.importQueued).toBe(0);
+    expect(s.importReport?.added).toBe(2);
+    expect(s.importReport?.failures).toHaveLength(1);
+    expect(s.selectedId).toBe("m-iphone");
+  });
+});
