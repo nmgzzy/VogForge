@@ -1,0 +1,31 @@
+# Node
+node_modules/
+dist/
+*.log
+.vite/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Tauri
+src-tauri/gen/
+
+# 测试产物
+tests/fixtures/generated/
+crates/**/snapshots/*.snap.new
+
+# 编辑器与系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地配置
+.env
+.env.local
+
+# Playwright 调试产物
+.playwright-mcp/
+shot-*.png

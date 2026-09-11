@@ -1,0 +1,184 @@
+@import "tailwindcss";
+
+/* 主题通过 <html data-theme="light|dark"> 切换，组件只使用语义化颜色类，无需写 dark: 前缀 */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  color-scheme: light;
+
+  --vf-bg: oklch(0.972 0.004 255);
+  --vf-panel: oklch(0.995 0.001 255);
+  --vf-raised: oklch(0.955 0.005 255);
+  --vf-sunken: oklch(0.94 0.006 255);
+  --vf-line: oklch(0.905 0.007 255);
+  --vf-line-strong: oklch(0.84 0.01 255);
+
+  --vf-fg: oklch(0.23 0.018 260);
+  --vf-muted: oklch(0.45 0.018 260);
+  --vf-subtle: oklch(0.6 0.014 260);
+
+  --vf-accent: oklch(0.56 0.19 262);
+  --vf-accent-hover: oklch(0.5 0.2 262);
+  --vf-accent-fg: oklch(0.99 0 0);
+
+  --vf-ok: oklch(0.56 0.14 152);
+  --vf-warn: oklch(0.64 0.15 68);
+  --vf-danger: oklch(0.56 0.2 27);
+
+  /* 媒体特征色：与保真度三态刻意区分 */
+  --vf-hdr: oklch(0.62 0.14 85);
+  --vf-dv: oklch(0.53 0.2 305);
+  --vf-atmos: oklch(0.55 0.12 215);
+  --vf-lossless: oklch(0.55 0.12 175);
+  --vf-vfr: oklch(0.6 0.16 45);
+
+  --vf-shadow: 0 1px 2px oklch(0.2 0.02 260 / 0.06), 0 4px 12px oklch(0.2 0.02 260 / 0.05);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --vf-bg: oklch(0.155 0.009 262);
+  --vf-panel: oklch(0.188 0.01 262);
+  --vf-raised: oklch(0.222 0.011 262);
+  --vf-sunken: oklch(0.135 0.008 262);
+  --vf-line: oklch(0.275 0.012 262);
+  --vf-line-strong: oklch(0.35 0.014 262);
+
+  --vf-fg: oklch(0.945 0.006 262);
+  --vf-muted: oklch(0.74 0.012 262);
+  --vf-subtle: oklch(0.56 0.013 262);
+
+  --vf-accent: oklch(0.68 0.16 258);
+  --vf-accent-hover: oklch(0.74 0.15 258);
+  --vf-accent-fg: oklch(0.16 0.02 262);
+
+  --vf-ok: oklch(0.74 0.15 152);
+  --vf-warn: oklch(0.8 0.14 78);
+  --vf-danger: oklch(0.69 0.18 25);
+
+  --vf-hdr: oklch(0.84 0.14 90);
+  --vf-dv: oklch(0.72 0.17 305);
+  --vf-atmos: oklch(0.77 0.11 210);
+  --vf-lossless: oklch(0.78 0.12 172);
+  --vf-vfr: oklch(0.78 0.14 55);
+
+  --vf-shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 24px oklch(0 0 0 / 0.25);
+}
+
+@theme inline {
+  --color-bg: var(--vf-bg);
+  --color-panel: var(--vf-panel);
+  --color-raised: var(--vf-raised);
+  --color-sunken: var(--vf-sunken);
+  --color-line: var(--vf-line);
+  --color-line-strong: var(--vf-line-strong);
+  --color-fg: var(--vf-fg);
+  --color-muted: var(--vf-muted);
+  --color-subtle: var(--vf-subtle);
+  --color-accent: var(--vf-accent);
+  --color-accent-hover: var(--vf-accent-hover);
+  --color-accent-fg: var(--vf-accent-fg);
+  --color-ok: var(--vf-ok);
+  --color-warn: var(--vf-warn);
+  --color-danger: var(--vf-danger);
+  --color-hdr: var(--vf-hdr);
+  --color-dv: var(--vf-dv);
+  --color-atmos: var(--vf-atmos);
+  --color-lossless: var(--vf-lossless);
+  --color-vfr: var(--vf-vfr);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", "SF Mono", Menlo, Consolas,
+    monospace;
+
+  --shadow-card: var(--vf-shadow);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    user-select: none;
+  }
+  /* 可复制的内容允许选择 */
+  code,
+  pre,
+  .selectable {
+    user-select: text;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 32%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  button {
+    cursor: default;
+  }
+
+  /* 细滚动条，桌面工具惯例 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 99px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes vf-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
+}
+.progress-live {
+  background-image: linear-gradient(
+    -45deg,
+    color-mix(in oklab, white 18%, transparent) 25%,
+    transparent 25%,
+    transparent 50%,
+    color-mix(in oklab, white 18%, transparent) 50%,
+    color-mix(in oklab, white 18%, transparent) 75%,
+    transparent 75%
+  );
+  background-size: 24px 24px;
+  animation: vf-stripes 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-live {
+    animation: none;
+  }
+}
