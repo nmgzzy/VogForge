@@ -258,7 +258,7 @@
 - [x] 首次使用引导：检查环境 → 能力说明 → 建议
 - [x] 完成通知（设置里的 `notify`）与完成后动作（打开输出目录 / 源文件移到回收站，每批确认一次，只处理校验通过的任务）
 - [x] macOS 上父进程被强杀时结束 ffmpeg：每个 ffmpeg 配一个 sh 看门狗（单元测试在 macOS CI 上跑）
-- [x] 持续集成：前端检查（Linux）；Rust 格式、clippy、全部测试与 wasm 构建在 Windows 与 macOS 上各跑一遍，装真实 ffmpeg
+- [x] 持续集成：前端检查（Linux）；Rust 格式、clippy、全部测试与 wasm 构建在 Windows 与 macOS 上各跑一遍，装真实 ffmpeg。macOS 首次运行暴露的 Windows 路径依赖已修，三个 job 全部通过
 - [x] 960×640 最小窗口下各页面可用（队列页的统计徽章在窄窗口里隐藏）
 - [x] Windows 硬解改写 `-hwaccel d3d11va`：自测时发现远程桌面断开后 `-hwaccel auto` 让 ffmpeg 崩溃（技术事实文档 7.5 节）
 - [~] 走完需求文档第 6 节验收标准：8 条已有证据（见[计划](plan.md)的验收记录），第 4 条待真实杜比视界素材，第 10 条的 macOS 手动部分待实机
