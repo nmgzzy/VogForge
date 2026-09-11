@@ -23,8 +23,8 @@ import {
 import type { Job, JobStatus } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { argsToCommand, formatBytes, formatDuration, formatEta, formatFps } from "@/lib/format";
-import { SCENARIOS } from "@/mock/engine";
-import { encoderVendor, isHardware, VENDOR_LABEL } from "@/mock/engine/encoders";
+import { encoderVendor, isHardware, VENDOR_LABEL } from "@/lib/encoders";
+import { SCENARIOS } from "@/lib/scenarios";
 import { useQueue } from "@/stores/queue";
 import { useUi } from "@/stores/ui";
 import { Badge, Button, Empty, ProgressBar } from "@/components/ui";
@@ -83,7 +83,7 @@ function JobRow({ job, selected }: { job: Job; selected: boolean }) {
             )}
           </div>
           <div className="mt-0.5 truncate text-[11.5px] text-muted">
-            {scenario} · {job.outputPath.split("\\").pop()}
+            {scenario} · {job.outputPath.split(/[\\/]/).pop()}
           </div>
         </div>
         <EncoderChip job={job} />

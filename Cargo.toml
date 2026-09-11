@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/vidforge-core", "src-tauri"]
+members = ["crates/vidforge-core", "crates/vidforge-wasm", "src-tauri"]
 resolver = "3"
 
 [workspace.package]
@@ -13,3 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 ts-rs = { version = "12", features = ["serde-json-impl"] }
+
+# WebAssembly 引擎按体积优化（只有 vidforge-wasm 以 cdylib 形式编到 wasm32 时用得上）
+[profile.release.package.vidforge-wasm]
+opt-level = "s"

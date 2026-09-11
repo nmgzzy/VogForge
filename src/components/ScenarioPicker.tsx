@@ -12,7 +12,8 @@ import {
 } from "lucide-react";
 import type { MediaInfo, Scenario } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { SCENARIOS, suggestScenario } from "@/mock/engine";
+import { suggestScenario } from "@/lib/engine";
+import { SCENARIOS } from "@/lib/scenarios";
 import { useProject } from "@/stores/project";
 import { Button, Section } from "./ui";
 

@@ -21,8 +21,8 @@ import type { MediaInfo, SourceHint } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { formatBytes, formatDuration, resolutionLabel } from "@/lib/format";
 import { mediaFeatures } from "@/lib/media-features";
-import { SCENARIOS } from "@/mock/engine";
-import { CODEC_LABEL } from "@/mock/engine/encoders";
+import { CODEC_LABEL } from "@/lib/encoders";
+import { SCENARIOS } from "@/lib/scenarios";
 import { useProject, type ImportReport } from "@/stores/project";
 import { Badge, Button, Empty, ProgressBar } from "./ui";
 

@@ -1,0 +1,52 @@
+---
+source: crates/vidforge-core/tests/engine_behavior.rs
+expression: "lines.join(\"\\n\")"
+---
+m-iphone  Archive    libx265 q20 medium 10bit Source keep Keep dv:Preserve | Mkv | 1:copy | subs:All
+m-iphone  Collection libx265 q16 slow 10bit Source keep Keep dv:Preserve | Mkv | 1:copy | subs:All
+m-iphone  Streaming  hevc_videotoolbox q58 default 10bit Source cfr 30.000 Keep dv:Disable | Mp4 | 1:copy | subs:TextOnly
+m-iphone  Mobile     h264_videotoolbox q58 default 8bit P1080 keep Tonemap(ScaleVt) dv:Disable | Mp4 | 1:copy | subs:TextOnly
+m-iphone  Social     h264_videotoolbox q68 default 8bit P1080 cfr 30.000 Tonemap(ScaleVt) dv:Disable | Mp4 | 1:copy | subs:None
+m-iphone  Editing    libx265 q16 fast 10bit Source cfr 30.000 Keep dv:Disable gop15 | Mov | 1:copy | subs:None
+m-iphone  Smallest   libsvtav1 q38 6 10bit P1080 keep Keep dv:Disable | Mkv | 1:Opus@96 | subs:TextOnly
+m-iphone  Remux      copy | Mkv | 1:copy | subs:All
+m-bluray  Archive    libx265 q20 medium 10bit Source keep Keep dv:Disable | Mkv | 1:copy,2:copy,3:copy,4:copy,1:Aac@256 | subs:All
+m-bluray  Collection libx265 q16 slow 10bit Source keep Keep dv:Disable | Mkv | 1:copy,2:copy,3:copy,4:copy | subs:All
+m-bluray  Streaming  libx265 q23 fast 10bit Source keep Keep dv:Disable | Mp4 | 1:Eac3@640,2:copy,3:copy,4:copy,1:Aac@256 | subs:TextOnly
+m-bluray  Mobile     h264_videotoolbox q58 default 8bit P1080 keep Tonemap(ScaleVt) dv:Disable | Mp4 | 1:Aac@160 | subs:TextOnly
+m-bluray  Social     h264_videotoolbox q68 default 8bit P1080 cfr 23.976 Tonemap(ScaleVt) dv:Disable | Mp4 | 1:Aac@256 | subs:None
+m-bluray  Editing    libx265 q16 fast 10bit Source cfr 23.976 Keep dv:Disable gop12 | Mov | 1:PcmS24le,2:copy,3:copy,4:copy | subs:None
+m-bluray  Smallest   libsvtav1 q38 6 10bit P1080 keep Keep dv:Disable | Mkv | 1:Opus@96 | subs:TextOnly
+m-bluray  Remux      copy | Mkv | 1:copy,2:copy,3:copy,4:copy | subs:All
+m-drone   Archive    libx265 q20 medium 10bit Source keep Keep dv:Disable | Mkv |  | subs:All
+m-drone   Collection libx265 q16 slow 10bit Source keep Keep dv:Disable | Mkv |  | subs:All
+m-drone   Streaming  hevc_videotoolbox q58 default 8bit Source keep Keep dv:Disable | Mp4 |  | subs:TextOnly
+m-drone   Mobile     h264_videotoolbox q58 default 8bit P1080 keep Keep dv:Disable | Mp4 |  | subs:TextOnly
+m-drone   Social     h264_videotoolbox q68 default 8bit P1080 cfr 59.940 Keep dv:Disable | Mp4 |  | subs:None
+m-drone   Editing    libx264 q15 medium 8bit Source cfr 59.940 Keep dv:Disable gop30 | Mov |  | subs:None
+m-drone   Smallest   libsvtav1 q38 6 8bit P1080 keep Keep dv:Disable | Mkv |  | subs:TextOnly
+m-drone   Remux      copy | Mkv |  | subs:All
+m-screen  Archive    libx265 q20 medium 10bit Source keep Keep dv:Disable | Mkv | 1:copy | subs:All
+m-screen  Collection libx265 q16 slow 10bit Source keep Keep dv:Disable | Mkv | 1:copy | subs:All
+m-screen  Streaming  hevc_videotoolbox q58 default 8bit Source cfr 60.000 Keep dv:Disable | Mp4 | 1:copy | subs:TextOnly
+m-screen  Mobile     h264_videotoolbox q58 default 8bit P1080 keep Keep dv:Disable | Mp4 | 1:copy | subs:TextOnly
+m-screen  Social     h264_videotoolbox q68 default 8bit P1080 cfr 60.000 Keep dv:Disable | Mp4 | 1:copy | subs:None
+m-screen  Editing    libx264 q15 medium 8bit Source cfr 60.000 Keep dv:Disable gop30 | Mov | 1:copy | subs:None
+m-screen  Smallest   libsvtav1 q38 6 8bit P1080 keep Keep dv:Disable | Mkv | 1:Opus@96 | subs:TextOnly
+m-screen  Remux      copy | Mkv | 1:copy | subs:All
+m-camera  Archive    libx265 q20 medium 10bit Source keep Keep dv:Disable | Mkv | 1:copy,1:Aac@256 | subs:All
+m-camera  Collection libx265 q16 slow 10bit Source keep Keep dv:Disable | Mkv | 1:copy | subs:All
+m-camera  Streaming  hevc_videotoolbox q58 default 10bit Source keep Keep dv:Disable | Mp4 | 1:Aac@256 | subs:TextOnly
+m-camera  Mobile     h264_videotoolbox q58 default 8bit P1080 keep Tonemap(ScaleVt) dv:Disable | Mp4 | 1:Aac@160 | subs:TextOnly
+m-camera  Social     h264_videotoolbox q68 default 8bit P1080 cfr 25.000 Tonemap(ScaleVt) dv:Disable | Mp4 | 1:Aac@256 | subs:None
+m-camera  Editing    libx265 q16 fast 10bit Source cfr 25.000 Keep dv:Disable gop13 | Mov | 1:copy | subs:None
+m-camera  Smallest   libsvtav1 q38 6 10bit P1080 keep Keep dv:Disable | Mkv | 1:Opus@96 | subs:TextOnly
+m-camera  Remux      copy | Mkv | 1:copy | subs:All
+m-stream  Archive    libx265 q20 medium 10bit Source keep Keep dv:Disable | Mkv | 1:copy | subs:All
+m-stream  Collection libx265 q16 slow 10bit Source keep Keep dv:Disable | Mkv | 1:copy | subs:All
+m-stream  Streaming  hevc_videotoolbox q58 default 8bit Source keep Keep dv:Disable | Mp4 | 1:copy | subs:TextOnly
+m-stream  Mobile     h264_videotoolbox q58 default 8bit P1080 keep Keep dv:Disable | Mp4 | 1:copy | subs:TextOnly
+m-stream  Social     h264_videotoolbox q68 default 8bit P1080 cfr 25.000 Keep dv:Disable | Mp4 | 1:copy | subs:None
+m-stream  Editing    libx264 q15 medium 8bit Source cfr 25.000 Keep dv:Disable gop13 | Mov | 1:copy | subs:None
+m-stream  Smallest   libsvtav1 q38 6 8bit P1080 keep Keep dv:Disable | Mkv | 1:Opus@96 | subs:TextOnly
+m-stream  Remux      copy | Mkv | 1:copy | subs:All

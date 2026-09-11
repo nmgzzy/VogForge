@@ -1,6 +1,6 @@
 //! 编码器相关的静态规则：质量档位映射、preset、10bit 与 HDR10 支持、自动选择。
 
-use crate::model::{Capabilities, Codec, EncoderId, Platform, QualityTier, Scenario, Vendor};
+use crate::model::{Capabilities, Codec, EncoderId, Platform, QualityTier, RateControl, Scenario, Vendor};
 
 /// 质量刻度按编码器家族区分，跨家族不等价（设计文档 6.2）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,19 @@ pub fn supports_10bit(id: EncoderId, caps: &Capabilities) -> bool {
     !id.is_hardware() || caps.encoder(id).is_some_and(|e| e.ten_bit)
 }
 
+/// 编码器能否按这种方式控制码率（技术事实文档 8.2）
+pub fn supports_rate_control(id: EncoderId, rc: RateControl) -> bool {
+    match rc {
+        RateControl::Quality | RateControl::Bitrate { .. } => true,
+        // QSV 的"质量 + 峰值"要走 QVBR，av1_qsv 实测打不开；AMF / VideoToolbox 没有对应模式
+        RateControl::Capped { .. } => {
+            matches!(family(id), Family::X265 | Family::X264 | Family::SvtAv1 | Family::Nvenc)
+                || matches!(id, EncoderId::HevcQsv | EncoderId::H264Qsv)
+        }
+        RateControl::TwoPass { .. } => !id.is_hardware(),
+    }
+}
+
 /// 会把 HDR10 静态元数据写进码流的编码器（技术事实文档 7.3 节）
 pub fn writes_hdr10(id: EncoderId) -> bool {
     use EncoderId::*;
@@ -135,6 +148,8 @@ pub struct EncoderNeeds {
     pub need_10bit: bool,
     pub need_dv: bool,
     pub need_hdr10: bool,
+    /// 两遍编码只有软件编码器支持
+    pub need_two_pass: bool,
 }
 
 pub struct EncoderPick {
@@ -148,6 +163,9 @@ pub fn pick_encoder(codec: Codec, needs: &EncoderNeeds, caps: &Capabilities) -> 
     let pick = |encoder, reason: String| EncoderPick { encoder, reason };
     if needs.need_dv {
         return pick(sw, "杜比视界的动态元数据只能由软件编码器写入，硬件编码器无法输出杜比视界".into());
+    }
+    if needs.need_two_pass && software_usable(codec, caps) {
+        return pick(sw, "两遍编码只有软件编码器支持".into());
     }
     if !software_usable(codec, caps) {
         // 软件编码器没编译进当前 ffmpeg（例如 essentials 构建没有 libsvtav1）：只能用硬件编码器
@@ -207,9 +225,23 @@ mod tests {
         let caps = Capabilities::placeholder(EnvStatus::Probing, "");
         let p = pick_encoder(
             Codec::Hevc,
-            &EncoderNeeds { prefer_hw: true, need_10bit: true, need_dv: true, need_hdr10: true },
+            &EncoderNeeds { prefer_hw: true, need_10bit: true, need_dv: true, need_hdr10: true, need_two_pass: false },
             &caps,
         );
         assert_eq!(p.encoder, EncoderId::Libx265);
+    }
+
+    #[test]
+    fn rate_control_support_matrix() {
+        let (cap, two) = (RateControl::Capped { kbps: 8000 }, RateControl::TwoPass { kbps: 6000 });
+        for id in [EncoderId::Libx265, EncoderId::Libx264, EncoderId::Libsvtav1] {
+            assert!(supports_rate_control(id, cap) && supports_rate_control(id, two), "{id:?}");
+        }
+        assert!(supports_rate_control(EncoderId::HevcQsv, cap));
+        assert!(!supports_rate_control(EncoderId::Av1Qsv, cap));
+        assert!(!supports_rate_control(EncoderId::HevcAmf, cap));
+        assert!(!supports_rate_control(EncoderId::HevcVideotoolbox, cap));
+        assert!(!supports_rate_control(EncoderId::HevcNvenc, two));
+        assert!(supports_rate_control(EncoderId::HevcVideotoolbox, RateControl::Bitrate { kbps: 1 }));
     }
 }

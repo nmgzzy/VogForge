@@ -5,6 +5,7 @@ import type { EncoderId } from "./EncoderId";
 import type { FpsPolicy } from "./FpsPolicy";
 import type { HdrAction } from "./HdrAction";
 import type { QualityTier } from "./QualityTier";
+import type { RateControl } from "./RateControl";
 import type { ResolutionPreset } from "./ResolutionPreset";
 import type { StreamAction } from "./StreamAction";
 import type { ToneMapPipeline } from "./ToneMapPipeline";
@@ -17,7 +18,7 @@ encoderAuto: boolean, quality: QualityTier,
 /**
  * 当前编码器下的原生质量数值（CRF / CQ / global_quality …）
  */
-qualityValue: number, preset: string, bitDepth: 8 | 10, resolution: ResolutionPreset, fps: FpsPolicy, hdrAction: HdrAction, tonemap?: ToneMapPipeline, dovi: DoviAction, gop?: number, 
+qualityValue: number, rateControl: RateControl, preset: string, bitDepth: 8 | 10, resolution: ResolutionPreset, fps: FpsPolicy, hdrAction: HdrAction, tonemap?: ToneMapPipeline, dovi: DoviAction, gop?: number, 
 /**
  * 追加到 `-x265-params` 的原始串
  */

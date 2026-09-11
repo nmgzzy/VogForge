@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Check, ChevronsDownUp, ChevronsUpDown, Copy, ListPlus, SquareTerminal } from "lucide-react";
 import type { MediaInfo, PlanResult, TranscodePlan } from "@/lib/types";
 import { argsToCommand, quoteArg } from "@/lib/format";
-import { buildArgSegments } from "@/mock/engine";
 import { useCapabilities } from "@/stores/capability";
 import { useProject } from "@/stores/project";
 import { useQueue } from "@/stores/queue";
@@ -34,8 +33,13 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
   const [copied, setCopied] = useState(false);
   const [queued, setQueued] = useState<string>();
 
-  const segs = buildArgSegments(media, plan, caps);
-  const cmd = argsToCommand(result.args, caps.platform === "windows" ? "powershell" : "posix");
+  const segs = result.segments;
+  const shell = caps.platform === "windows" ? "powershell" : "posix";
+  // 两遍编码复制两行：先第一遍分析，再第二遍输出
+  const cmd = [result.firstPass, result.args]
+    .filter((a): a is string[] => !!a)
+    .map((a) => argsToCommand(a, shell))
+    .join("\n");
   const conflicts = result.fidelity.filter(
     (f) => plan.fidelity[f.kind] && (f.state === "needs_change" || f.state === "impossible"),
   ).length;
@@ -64,6 +68,11 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
     <div className="border-t border-line bg-panel">
       <div className="flex items-center gap-3 px-4 py-2.5">
         <SquareTerminal className="size-4 shrink-0 text-subtle" />
+        {!expanded && result.firstPass && (
+          <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[10.5px] text-muted" title="两遍编码：复制时包含第一遍的分析命令">
+            两遍
+          </span>
+        )}
         {!expanded && (
           <code className="selectable min-w-0 flex-1 truncate font-mono text-[11.5px]" title={cmd}>
             {result.args.map((a, i) => (
@@ -112,6 +121,19 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
       {expanded && (
         <div className="max-h-[38vh] overflow-y-auto border-t border-line bg-sunken/60 px-4 py-3">
           <div className="selectable grid grid-cols-[52px_1fr] gap-x-3 gap-y-1.5 font-mono text-[11.5px] leading-relaxed">
+            {result.firstPass && (
+              <div className="contents" data-testid="first-pass">
+                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">第一遍</span>
+                <span className="border-b border-line pb-2 [overflow-wrap:anywhere]">
+                  {result.firstPass.map((a, j) => (
+                    <span key={j}>
+                      {j > 0 && " "}
+                      <Token a={a} />
+                    </span>
+                  ))}
+                </span>
+              </div>
+            )}
             {segs.map((s, i) => (
               <div key={i} className="contents">
                 <span className="pt-px text-right font-sans text-[10.5px] text-subtle">{s.label}</span>
@@ -127,6 +149,7 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             ))}
           </div>
           <p className="mt-3 font-sans text-[11px] text-subtle">
+            {result.firstPass && "两遍编码：先运行第一遍（只分析画面、不输出文件），再运行其余命令。"}
             实际执行时写入 <code className="font-mono">.vidforge-part</code> 临时文件，校验通过后才改名为上面的最终文件名。
           </p>
         </div>

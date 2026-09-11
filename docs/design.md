@@ -10,8 +10,9 @@
 ┌─────────────────────────────────────────────────────────┐
 │  前端 React + TypeScript (src/)                          │
 │  导入 · 参数编辑 · 保真度勾选 · 队列 · 环境 · 设置          │
+│  决策引擎：vidforge-core 编译成 WebAssembly（src/wasm/）   │
 └───────────────────────┬─────────────────────────────────┘
-                        │ Tauri invoke / event
+                        │ Tauri invoke / event（探测、分析、设置、执行）
 ┌───────────────────────▼─────────────────────────────────┐
 │  src-tauri/  —— 仅做胶水层                               │
 │  command 注册 · 事件推送 · 窗口与文件对话框 · ts-rs 导出    │
@@ -42,7 +43,7 @@
 动机是双重的：单元测试不需要起 GUI；将来要出命令行版本时只需新增一层外壳。`src-tauri` 里不允许出现任何决策逻辑，只做参数转换和事件转发。
 
 **原则二：标★的四个模块是纯函数，不做 IO。**
-`args` / `strategy` / `fidelity` / `container` 接收 `Capabilities` 结构体作为输入，而不是自己去探测环境。这样同一份输入永远得到同一份输出，可以用快照测试把上百种参数组合锁死。
+`args` / `strategy` / `fidelity` / `container` 接收 `Capabilities` 结构体作为输入，而不是自己去探测环境。这样同一份输入永远得到同一份输出，可以用快照测试把上百种参数组合锁死。纯函数也让决策引擎能编译成 WebAssembly，在界面里同步调用（6.5 节）。
 
 这条原则是整个项目的质量核心。原因很直接：ffmpeg 参数写错一个字，转码会正常完成、退出码为 0，但元数据已经悄悄丢了。这类错误无法靠"跑一下看看"发现，只能靠可回归的测试网。
 
@@ -111,7 +112,8 @@ TranscodePlan
 ├─ video: VideoPlan
 │   ├─ action: Copy | Encode
 │   ├─ encoder: EncoderId                // libx265 | hevc_qsv | hevc_nvenc | ...
-│   ├─ rate_control: Crf | Cq | Bitrate{target,max,bufsize} | TwoPass
+│   ├─ quality, quality_value              // 语义档位与该编码器上的原生数值
+│   ├─ rate_control: Quality | Bitrate{kbps} | Capped{kbps} | TwoPass{kbps}
 │   ├─ preset, profile, level, pix_fmt, bit_depth
 │   ├─ scale: Option<Scale>, fps: FpsPolicy
 │   ├─ hdr_action: Keep | ToneMapToSdr(pipeline) | StripMetadata
@@ -213,7 +215,7 @@ Capabilities
 [全局]   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
 [输入]   -hwaccel auto [-init_hw_device opencl=ocl -filter_hw_device ocl] -i <path>
 [映射]   -map 0:v:0 -map 0:<音轨>… [-map 0:s? | 文本字幕] [-map 0:t?] [-map_chapters 0] -map_metadata 0
-[视频]   -c:v … -pix_fmt … [RC] [preset/profile] [-x265-params] [-g] [-dolbyvision 0|1] [附加参数]
+[视频]   -c:v … -pix_fmt … [preset/profile] [码率控制] [-x265-params] [-g] [-dolbyvision 0|1] [附加参数] [-pass 2 -passlogfile …]
 [滤镜]   -vf <缩放 / 色调映射 / tpad>
 [帧率]   -fps_mode:v cfr -r <目标>
 [音频]   -c:a:N … -b:a:N … -filter:a:N <pan 降混 / aresample> -ac:a:N … -metadata:s:a:N title=…
@@ -232,7 +234,11 @@ Capabilities
 - 视频按分析得到的流序号映射（`-map 0:<index>`），不用 `0:v:0`：小写 `v` 会把封面图也算进去。
 - 缩放按显示方向计算：重编码时 ffmpeg 先按 Display Matrix 自动旋转，竖拍素材编码尺寸 1920×1080、旋转 90° 时目标 720p 应是 720×1280（实测输出 720×1280、不再带旋转）。
 
-**与前端 mock 引擎的对照。** 阶段 5 之前前端仍用 TS 引擎做推荐。两边对同一批输入必须产出完全相同的命令：`src/mock/engine/golden.test.ts` 把 6 个示例素材 × 8 个场景 × 两套环境、全部一键修正、全部编码器的 8/10bit、四条色调映射管线、字幕与容器组合等约 200 个样本写进 `tests/fixtures/golden/engine.json`，Rust 的 `golden_engine.rs` 逐条对照。改规则时两边一起改，用 `UPDATE_GOLDEN=1` 重写样本。
+**码率控制（需求 F-3.3）。** 四种模式：恒定质量、目标码率（峰值 1.5 倍）、限峰值（按质量编码但峰值不超过上限）、两遍。各编码器的写法与实测依据见技术事实文档 8.2 节，要点是几种错误写法都不报错、只会静默换成别的模式：QSV 只给 `global_quality` 与 `maxrate` 会落到 CQP，libx265 只给 `maxrate` 不给 `bufsize` 会忽略上限。编码器做不到的组合由 `normalize_plan` 换成最接近的模式（4.5 节）。
+
+**两遍编码。** `build_first_pass` 生成第一遍：输入、视频编码参数、滤镜、帧率与第二遍逐段相同（两遍必须看到相同的帧），只映射视频，输出 `-f null -`。两遍共用统计文件前缀 `<输出路径>.2pass`，ffmpeg 实际写 `<前缀>-0.log`。`PlanResult.first_pass` 带着第一遍命令，界面预览与复制时两行都给；由执行器依次运行两条命令（阶段 6）。
+
+**回归样本。** `tests/fixtures/golden/engine.json` 存着约 200 个输入（6 个示例素材 × 8 个场景 × 两套环境、全部一键修正、全部编码器的 8/10bit、四条色调映射管线、字幕与容器组合等）及其完整产出，`golden_engine.rs` 逐条核对。样本最初由 TS 原型引擎生成，阶段 5 两边逐条对齐后删除原型，改由 Rust 维护：规则有意变更时用 `UPDATE_GOLDEN=1` 重写，diff 随改动一起提交。
 
 ### 4.4 保真度约束求解（`pipeline/fidelity.rs`）
 
@@ -294,6 +300,8 @@ FidelityItem {
 | 高价值内容提醒 | 检测到杜比视界 / Atmos / 无损音轨时主动建议启用保真度保留 |
 | P5 警告 | 杜比视界 Profile 5 无 HDR10 回退层，非 DV 播放器会显示绿/紫画面 |
 | 只用编得了的编码器 | 软件编码器没编译进当前 ffmpeg 时改用同格式的硬件编码器；整个格式都编不了时换一种能编的格式并给出警告；界面把编不了的格式置灰。绝不生成一条跑不起来的命令 |
+
+`normalize_plan`（`update_plan` 的实现）在用户每次改参数后让计划重新自洽：编码格式编不了就换格式；手选的编码器不可用或与格式不符就回到自动；自动选择时按场景、10bit、杜比视界、HDR10、两遍的需要重选编码器，换了编码器就重算质量数值与 preset；preset 不属于当前编码器时换成该编码器的默认值；码率拉回 100k–400000k；编码器做不到的码率控制换成最接近的模式；硬编不支持 10bit 就降 8bit；色调映射管线不可用就换可用的；最后按容器重建音轨。
 
 ### 4.6 进度解析（`ffmpeg/progress.rs`）
 
@@ -511,7 +519,7 @@ macOS 的 Homebrew 构建三条管线全缺，这是跨平台最大的坑，必�
 |---|---|---|
 | L1 场景 | 8 个场景卡片，每张只显示标题与不超过 7 字的短说明，完整描述在悬停提示里 | 展开 |
 | L2 关键参数 | 画质档位、编码格式、分辨率、编码器、容器、HDR（仅 HDR 源）、帧率、音频 | 展开 |
-| L3 更多参数 | 色深、字幕、preset、质量数值、GOP、色调映射管线、`-x265-params`、附加参数 | 折叠，标题栏显示当前取值摘要 |
+| L3 更多参数 | 色深、字幕、preset、质量数值、码率控制、GOP、色调映射管线、`-x265-params`、附加参数 | 折叠，标题栏显示当前取值摘要 |
 
 色深与字幕通常由场景决定，放在 L3。质量选择在 L2 用语义档位（视觉无损 / 高 / 标准 / 小体积），在 L3 才露出具体数值。质量档位到数值的映射按编码器分别定义，并在界面标注"跨编码器不等价"——x265 CRF 18、NVENC CQ 26、QSV global_quality 24 之间没有统一刻度。
 
@@ -545,7 +553,13 @@ Zustand store，职责不重叠：
 
 能力快照变化（例如探测完成）后，`useProject.refreshPlans` 按新能力重新整理全部计划。
 
-前端不做任何编码决策。场景推荐、参数校验、保真度求解全部走后端，前端只负责展示和收集输入。这样决策逻辑只有一份实现，且可被 Rust 测试覆盖。
+前端不自己做编码决策。场景推荐、参数整理、保真度求解、命令构建与预估全部由 `vidforge-core` 完成，前端只负责展示和收集输入。决策逻辑只有一份实现，由 Rust 测试覆盖。
+
+**决策引擎以 WebAssembly 运行在界面里。** `crates/vidforge-wasm` 把引擎的纯函数部分编译成 wasm（`pnpm wasm` 生成 `src/wasm/pkg/`，产物随仓库提交），`src/lib/engine.ts` 包装成同步调用：`recommendPlan` / `updatePlan` / `applyFix` / `evaluate` / `suggestScenario`，以及界面用的规则表 `engineMeta()`（各编码器的质量刻度、preset、支持的码率控制，标准帧率档）和 `videoHints()`（推荐的 CFR 目标、是否极端可变帧率）。桌面应用、浏览器预览、组件测试调用的是同一段代码。
+
+选择 WebAssembly 而不是 Tauri 命令的理由：参数每改一次就要重新求值，同步调用没有 IPC 往返，store 保持同步写法；浏览器预览也能用真实引擎，不再维护第二份 TS 实现。代价是约 590 KB 的 wasm 文件与 CSP 里的 `'wasm-unsafe-eval'`。执行转码时后端用同一份 Rust 代码从计划重新生成命令，不信任前端传来的参数。
+
+wasm 里拿不到系统时间，命名模板的 `{date}` 由前端传入本地日期；输出路径按设置里的输出目录与命名模板计算。wasm 上的 `std::path` 只认 `/`，会把 `D:\素材\a.mov` 当成没有父目录的文件名，所以引擎里的路径一律按字符串处理、两种分隔符都认，拼接时沿用基准路径的分隔符（`output.rs`）。应用启动时先 `await initEngine()` 再加载界面（部分 store 在模块加载时就会调用引擎）；测试在 `src/test-setup.ts` 里同步初始化。
 
 **后端适配层。** 前端通过 `src/backend/` 的 `Backend` 接口访问后端：运行在 Tauri 窗口里时是 `invoke` 与事件监听，浏览器预览和组件测试里是 mock 实现。store 只依赖接口，不感知运行环境。命令与事件名：
 
@@ -568,11 +582,12 @@ Zustand store，职责不重叠：
 | 层 | 范围 | 工具 |
 |---|---|---|
 | 单元 | probe JSON 解析、progress 块协议解析、容器矩阵、保真度求解、策略规则、预估边界 | `cargo test` |
-| 对照 | Rust 与前端 TS 引擎对约 200 个黄金样本产出完全相同的命令 | `golden_engine.rs` + `golden.test.ts` |
-| 事实断言 | 每条技术事实在全部黄金样本上成立（无 `-vsync`、MP4 HEVC 带 hvc1……） | `args_facts.rs` |
-| 快照 | 15 个关键组合的完整命令，改动时一眼看出差异 | `insta` |
+| 行为 | 场景推荐、每条常识保护的触发与不触发、保真度三态与每个一键修正、编码器选择、码率控制 | `engine_behavior.rs` |
+| 回归 | 约 200 个样本的推荐、修正、命令与评估结果不变 | `golden_engine.rs` |
+| 事实断言 | 每条技术事实在全部黄金样本上成立（无 `-vsync`、MP4 HEVC 带 hvc1、QSV 峰值必带目标码率……） | `args_facts.rs` |
+| 快照 | 15 个关键组合的完整命令、8 个编码器 × 4 种码率控制的视频参数 | `insta` |
 | 集成 | 合成素材 → 分析 → 生成命令 → 真实 ffmpeg 转码 → ffprobe 核对输出 | `media_real.rs`、`transcode_real.rs` |
-| 前端 | store 逻辑、保真度状态渲染、参数映射 | Vitest |
+| 前端 | store 逻辑、保真度状态渲染、码率控制交互；经 wasm 调用真实引擎 | Vitest |
 | 手动 | 见需求文档第 6 节验收标准 | 清单核对 |
 
 **合成测试素材**是集成测试能跑起来的关键。用 ffmpeg 自己生成带 BT.2020/PQ 加 MDCV/MaxCLL 的 HDR10 片段、多音轨片段、VFR 片段，这样测试不依赖用户手里的蓝光原盘，CI 里也能跑。生成命令直接写在集成测试里（`media_real.rs`、`transcode_real.rs`），不另设脚本，保证素材与断言同源。

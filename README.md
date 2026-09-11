@@ -2,7 +2,7 @@
 
 Windows / macOS 桌面视频转码工具。后端调用系统 ffmpeg，按用途自动推荐参数，并能判断、保留、核对杜比视界、HDR、杜比全景声等高价值信息。
 
-当前处于**阶段 4 完成**：Rust 核心库能定位 ffmpeg、做三层能力探测（编译能力、硬件设备初始化、真实试编码），用 ffprobe 分析拖入的文件与文件夹（HDR10 / HLG / 杜比视界 / 全景声 / 无损音轨 / 图形字幕 / 可变帧率 / 拍摄设备），并生成已在真实 ffmpeg 上验证过的转码命令。转码页的推荐与保真度求解暂时仍由前端 TS 引擎驱动（与 Rust 用黄金样本逐条对照），阶段 5 切到 Rust。
+当前处于**阶段 5 完成**：Rust 核心库能定位 ffmpeg、做三层能力探测（编译能力、硬件设备初始化、真实试编码），用 ffprobe 分析拖入的文件与文件夹（HDR10 / HLG / 杜比视界 / 全景声 / 无损音轨 / 图形字幕 / 可变帧率 / 拍摄设备），按场景推荐参数并解释每条决定，判定保真度冲突并给出一键修正，生成已在真实 ffmpeg 上验证过的转码命令（含四种码率控制与两遍编码）。决策引擎编译成 WebAssembly 在界面里运行，桌面应用与浏览器预览用的是同一份 Rust 代码。下一步是阶段 6 的执行与队列。
 
 ## 文档
 
@@ -17,6 +17,14 @@ Windows / macOS 桌面视频转码工具。后端调用系统 ffmpeg，按用途
 ## 运行
 
 需要 Node 22+、pnpm、Rust stable；Windows 另需 MSVC 生成工具与 WebView2（Windows 11 自带）。转码本身需要 ffmpeg 7.1 或更高版本，应用会自动查找，也可以在设置里指定。
+
+决策引擎的 WebAssembly 包（`src/wasm/pkg/`）随仓库提交，只跑界面不需要额外工具。改了 `crates/vidforge-core` 的引擎逻辑后要重新生成：
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.128 --locked   # 版本必须与 crates/vidforge-wasm 的依赖一致
+pnpm wasm
+```
 
 ```bash
 pnpm install
@@ -35,9 +43,9 @@ pnpm test:rust    # Rust 单元测试与真实 ffmpeg 集成测试
 pnpm bindings     # 改了 Rust 模型后重新生成 src/bindings/ 下的 TS 类型
 ```
 
-- 前端测试的重点是 mock 引擎：遍历全部示例素材 × 全部场景，断言 `docs/ffmpeg-facts.md` 中的每条技术事实在生成的命令里都成立。
+- 前端测试通过 wasm 调用真实的 Rust 引擎；`engine.golden.test.ts` 核对提交的 wasm 包与 Rust 回归样本一致，忘了 `pnpm wasm` 会在这里失败。
 - Rust 测试用本机采集的真实 ffmpeg / ffprobe 输出做解析与分类测试（`crates/vidforge-core/tests/fixtures/`）。三个集成测试在真实 ffmpeg 上运行，找不到时自动跳过：`probe_real.rs` 跑完整能力探测，能力受限与旧版本构建通过环境变量 `VIDFORGE_TEST_FFMPEG_ESSENTIALS`、`VIDFORGE_TEST_FFMPEG_OLD` 指定；`media_real.rs` 合成一批测试素材再走完整导入流程；`transcode_real.rs` 用生成的命令真实转码并核对输出。
-- 命令构建有三道网：`golden_engine.rs` 与前端 `golden.test.ts` 对照同一份约 200 个样本的黄金文件；`args_facts.rs` 在全部样本上断言技术事实；insta 快照锁住 15 个关键组合。改命令规则时两边一起改，再用 `UPDATE_GOLDEN=1 pnpm vitest run src/mock/engine/golden.test.ts` 重写黄金文件。
+- 引擎有四道网：`engine_behavior.rs` 断言推荐、常识保护、保真度与修正、码率控制的行为；`args_facts.rs` 在全部样本上断言技术事实；`golden_engine.rs` 锁住约 200 个样本的完整产出；insta 快照锁住关键组合的命令与场景推荐一览。规则有意变更后用 `UPDATE_GOLDEN=1 cargo test -p vidforge-core --test golden_engine` 与 `INSTA_UPDATE=always cargo test -p vidforge-core` 重写，审阅 diff 后再 `pnpm wasm`。
 - 桌面应用端到端：以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 pnpm tauri dev` 启动后，用 `node scripts/tauri-cdp.mjs` 驱动窗口与截图（仅 Windows）。
 
 ## 目录
@@ -50,10 +58,12 @@ src/
   components/    界面组件
   views/         五个页面：转码 / 队列 / 环境 / 预设 / 设置
   stores/        Zustand 状态：ui / capability / settings / project / queue
-  mock/          浏览器预览用的引擎、示例素材、环境与队列模拟
-  lib/           类型定义与纯函数工具
+  mock/          浏览器预览用的示例素材、环境与队列模拟
+  lib/           引擎包装（engine.ts）、界面文案表、类型定义与纯函数工具
+  wasm/pkg/      决策引擎的 WebAssembly 包（pnpm wasm 生成，勿手改）
 crates/
   vidforge-core/ Rust 核心库：全部业务逻辑，不依赖 Tauri
+  vidforge-wasm/ 把决策引擎导出给前端的 WebAssembly 入口
 src-tauri/       Tauri 外壳：只做命令注册与事件转发
 scripts/         开发辅助脚本
 ```

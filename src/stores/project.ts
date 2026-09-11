@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { backend } from "@/backend";
 import type { ImportFailure, ImportProgress, MediaInfo, Scenario, TranscodePlan } from "@/lib/types";
 import { MOCK_MEDIA } from "@/mock/media";
-import { applyFix as engineApplyFix, recommendPlan, suggestScenario, updatePlan } from "@/mock/engine";
+import { applyFix as engineApplyFix, recommendPlan, suggestScenario, updatePlan } from "@/lib/engine";
 import { useCapabilities } from "./capability";
 
 export interface ImportReport {

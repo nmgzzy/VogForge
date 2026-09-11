@@ -6,9 +6,10 @@ use std::path::Path;
 
 use crate::model::{
     ArgSegment, AudioStream, Capabilities, Container, DoviAction, EncoderId, FpsPolicy, HdrAction, MediaInfo,
-    ResolutionPreset, StreamAction, SubtitleMode, ToneMapPipeline, TranscodePlan, VideoStream,
+    RateControl, ResolutionPreset, StreamAction, SubtitleMode, ToneMapPipeline, TranscodePlan, VideoStream,
 };
 
+use super::encoders::{Family, supports_rate_control};
 use super::fps::fps_arg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,17 +170,75 @@ fn video_filters(plan: &TranscodePlan, v: &VideoStream) -> Filters {
     Filters { vf: (!scale_expr.is_empty()).then_some(scale_expr), ..Default::default() }
 }
 
+fn kbps(k: u32) -> String {
+    format!("{k}k")
+}
+
+/// 码率控制参数，按编码器家族分派（技术事实文档 8.2）。`quality` 是该家族恒定质量模式的参数，
+/// 如 `["-crf", "23"]`；不支持的组合 normalize 已换成目标码率，这里按目标码率兜底
+fn rate_args(encoder: EncoderId, rc: RateControl, quality: &[String]) -> Vec<String> {
+    use EncoderId::*;
+    let family = super::encoders::family(encoder);
+    // 峰值与缓冲：目标码率模式峰值 1.5 倍；缓冲一律 2 倍峰值。x265 只给 maxrate 不给 bufsize 会静默忽略上限
+    let vbv = |peak: u32| vec!["-maxrate".to_string(), kbps(peak), "-bufsize".to_string(), kbps(peak * 2)];
+    let mut out = Vec::new();
+    match rc {
+        RateControl::Quality => out.extend(quality.iter().cloned()),
+        RateControl::Capped { kbps: peak } if supports_rate_control(encoder, rc) => match family {
+            Family::Nvenc => {
+                out.extend(quality.iter().cloned());
+                out.extend(vbv(peak));
+            }
+            // QSV 只给 global_quality + maxrate 会静默落到 CQP，必须走 QVBR：目标码率取峰值的 2/3
+            Family::Qsv => {
+                out.extend(quality.iter().cloned());
+                out.extend(["-b:v".to_string(), kbps(peak * 2 / 3)]);
+                out.extend(vbv(peak));
+            }
+            Family::SvtAv1 => {
+                out.extend(quality.iter().cloned());
+                out.extend(["-maxrate".to_string(), kbps(peak)]);
+            }
+            _ => {
+                out.extend(quality.iter().cloned());
+                out.extend(vbv(peak));
+            }
+        },
+        RateControl::TwoPass { kbps: k } if !encoder.is_hardware() => out.extend(["-b:v".to_string(), kbps(k)]),
+        _ => {
+            let k = match rc {
+                RateControl::Bitrate { kbps } | RateControl::TwoPass { kbps } => kbps,
+                RateControl::Capped { kbps } => kbps * 2 / 3,
+                RateControl::Quality => unreachable!(),
+            };
+            match family {
+                Family::Nvenc => out.extend(strings(&["-rc", "vbr"])),
+                Family::Amf => out.extend(strings(&["-rc", "vbr_peak"])),
+                _ => {}
+            }
+            out.extend(["-b:v".to_string(), kbps(k)]);
+            // SVT-AV1 的 -b:v 即 VBR；VideoToolbox 只认平均码率
+            if !matches!(encoder, Libsvtav1 | HevcVideotoolbox | H264Videotoolbox) {
+                out.extend(vbv(k * 3 / 2));
+            }
+        }
+    }
+    out
+}
+
 fn encoder_args(plan: &TranscodePlan, v: &VideoStream) -> Vec<String> {
     use EncoderId::*;
     let vp = &plan.video;
     let ten = vp.bit_depth == 10;
     let q = vp.quality_value.to_string();
     let mut out = vec!["-c:v".to_string(), vp.encoder.name().to_string()];
-    let mut push = |items: &[&str]| out.extend(items.iter().map(|s| s.to_string()));
+    let push = |out: &mut Vec<String>, items: &[&str]| out.extend(items.iter().map(|s| s.to_string()));
+    let rc = |quality: &[&str]| rate_args(vp.encoder, vp.rate_control, &strings(quality));
 
     match vp.encoder {
         Libx265 => {
-            push(&["-pix_fmt", if ten { "yuv420p10le" } else { "yuv420p" }, "-preset", &vp.preset, "-crf", &q]);
+            push(&mut out, &["-pix_fmt", if ten { "yuv420p10le" } else { "yuv420p" }, "-preset", &vp.preset]);
+            out.extend(rc(&["-crf", &q]));
             let mut params = vec!["repeat-headers=1".to_string()];
             // HDR10 元数据由 ffmpeg 自动透传，这里只打开码率分配优化，不手写 master-display
             if vp.hdr_action == HdrAction::Keep && v.color.hdr_kind == crate::model::HdrKind::Hdr10 {
@@ -188,56 +247,64 @@ fn encoder_args(plan: &TranscodePlan, v: &VideoStream) -> Vec<String> {
             if let Some(extra) = vp.extra_params.as_deref().filter(|s| !s.is_empty()) {
                 params.push(extra.to_string());
             }
-            push(&["-x265-params", &params.join(":")]);
+            push(&mut out, &["-x265-params", &params.join(":")]);
         }
         Libx264 => {
-            push(&[
-                "-pix_fmt",
-                if ten { "yuv420p10le" } else { "yuv420p" },
-                "-profile:v",
-                if ten { "high10" } else { "high" },
-            ]);
-            push(&["-preset", &vp.preset, "-crf", &q]);
+            push(
+                &mut out,
+                &[
+                    "-pix_fmt",
+                    if ten { "yuv420p10le" } else { "yuv420p" },
+                    "-profile:v",
+                    if ten { "high10" } else { "high" },
+                    "-preset",
+                    &vp.preset,
+                ],
+            );
+            out.extend(rc(&["-crf", &q]));
         }
         Libsvtav1 => {
-            push(&["-pix_fmt", if ten { "yuv420p10le" } else { "yuv420p" }, "-preset", &vp.preset, "-crf", &q]);
-            push(&["-svtav1-params", "tune=0"]);
+            push(&mut out, &["-pix_fmt", if ten { "yuv420p10le" } else { "yuv420p" }, "-preset", &vp.preset]);
+            out.extend(rc(&["-crf", &q]));
+            push(&mut out, &["-svtav1-params", "tune=0"]);
         }
         HevcQsv | H264Qsv | Av1Qsv => {
             // QSV 10bit 必须 p010le；7.0 起默认 RC 变为 CQP，这里用 global_quality 显式指定
-            push(&["-pix_fmt", if ten { "p010le" } else { "nv12" }]);
+            push(&mut out, &["-pix_fmt", if ten { "p010le" } else { "nv12" }]);
             if ten && vp.encoder == HevcQsv {
-                push(&["-profile:v", "main10"]);
+                push(&mut out, &["-profile:v", "main10"]);
             }
-            push(&["-preset", &vp.preset, "-global_quality", &q]);
+            push(&mut out, &["-preset", &vp.preset]);
+            out.extend(rc(&["-global_quality", &q]));
         }
         HevcNvenc | H264Nvenc | Av1Nvenc => {
-            push(&["-pix_fmt", if ten { "p010le" } else { "yuv420p" }]);
+            push(&mut out, &["-pix_fmt", if ten { "p010le" } else { "yuv420p" }]);
             if ten && vp.encoder == HevcNvenc {
-                push(&["-profile:v", "main10"]);
+                push(&mut out, &["-profile:v", "main10"]);
             }
             // -cq 必须配 -rc vbr -b:v 0，否则会被码率约束
-            push(&["-preset", &vp.preset, "-tune", "hq", "-rc", "vbr", "-b:v", "0", "-cq", &q]);
+            push(&mut out, &["-preset", &vp.preset, "-tune", "hq"]);
+            out.extend(rc(&["-rc", "vbr", "-b:v", "0", "-cq", &q]));
         }
         HevcAmf | H264Amf | Av1Amf => {
             // 显式给像素格式：不支持的格式会被静默换掉（技术事实文档 7.6）
-            push(&["-pix_fmt", if ten { "p010le" } else { "nv12" }]);
-            push(&["-quality", &vp.preset, "-rc", "cqp", "-qp_i", &q, "-qp_p", &q]);
+            push(&mut out, &["-pix_fmt", if ten { "p010le" } else { "nv12" }, "-quality", &vp.preset]);
+            out.extend(rc(&["-rc", "cqp", "-qp_i", &q, "-qp_p", &q]));
         }
         HevcVideotoolbox | H264Videotoolbox => {
             if ten && vp.encoder == HevcVideotoolbox {
-                push(&["-pix_fmt", "p010le", "-profile:v", "main10"]);
+                push(&mut out, &["-pix_fmt", "p010le", "-profile:v", "main10"]);
             }
-            push(&["-q:v", &q]);
+            out.extend(rc(&["-q:v", &q]));
         }
     }
 
     if let Some(gop) = vp.gop {
-        push(&["-g", &gop.to_string()]);
+        push(&mut out, &["-g", &gop.to_string()]);
     }
     // 源含杜比视界时必须显式表态：留空会被 auto 自动开启（技术事实文档 3.1）
     if v.dolby_vision.is_some() && matches!(vp.encoder, Libx265 | Libsvtav1) {
-        push(&["-dolbyvision", if vp.dovi == DoviAction::Preserve { "1" } else { "0" }]);
+        push(&mut out, &["-dolbyvision", if vp.dovi == DoviAction::Preserve { "1" } else { "0" }]);
     }
     // 不写 -color_primaries / -color_trc：9.0 起这两个输出选项不生效，编码器取帧上的色彩属性
     // （技术事实文档 12 节）。保留 HDR 时解码出的帧自带标签；转 SDR 时由色调映射滤镜打 BT.709 标签
@@ -293,17 +360,21 @@ fn seg(label: &str, args: Vec<String>) -> ArgSegment {
     ArgSegment { label: label.to_string(), args }
 }
 
-/// 生成完整命令（分段）。`output` 是实际写入的路径（通常是 `.vidforge-part` 临时文件）；`_caps` 预留给
-/// 依赖环境的写法（例如将来按平台选择硬解方式），现有规则都已体现在计划里
-pub fn build_arg_segments(
-    media: &MediaInfo,
-    plan: &TranscodePlan,
-    _caps: &Capabilities,
-    output: &Path,
-) -> Vec<ArgSegment> {
-    let v = media.video.first();
+/// 两遍编码的统计文件前缀：放在输出文件旁，ffmpeg 实际写 `<前缀>-<输出流序号>.log`（x265 另有 `.cutree`）
+pub fn passlog_prefix(output: &Path) -> String {
+    format!("{}.2pass", output.to_string_lossy())
+}
+
+fn two_pass(plan: &TranscodePlan) -> bool {
+    plan.video.action == StreamAction::Encode
+        && matches!(plan.video.rate_control, RateControl::TwoPass { .. })
+        && !plan.video.encoder.is_hardware()
+}
+
+/// 滤镜链（含 CFR 尾部补齐）。两遍的第一遍必须看到与第二遍完全相同的帧序列，所以两处共用
+fn prepared_filters(media: &MediaInfo, plan: &TranscodePlan) -> Filters {
     let vp = &plan.video;
-    let mut filters = match v {
+    let mut filters = match media.video.first() {
         Some(v) if vp.action == StreamAction::Encode => video_filters(plan, v),
         _ => Filters::default(),
     };
@@ -315,28 +386,81 @@ pub fn build_arg_segments(
             None => pad,
         });
     }
-    let mut segs = Vec::new();
+    filters
+}
 
+fn head_segments(media: &MediaInfo, plan: &TranscodePlan, filters: &Filters) -> Vec<ArgSegment> {
     // -y：输出是应用自己管理的临时文件，上次中断留下的同名文件直接覆盖；与目标文件的冲突在改名那一步处理
-    segs.push(seg(
-        "全局",
-        strings(&[
-            "ffmpeg",
-            "-hide_banner",
-            "-nostdin",
-            "-y",
-            "-loglevel",
-            "warning",
-            "-progress",
-            "pipe:1",
-            "-nostats",
-        ]),
-    ));
-
+    let global = strings(&[
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-loglevel",
+        "warning",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+    ]);
     let mut input = filters.hwaccel.clone().unwrap_or_else(|| hwaccel_for(plan, media));
     input.extend(filters.pre.iter().cloned());
     input.extend(["-i".to_string(), media.path.clone()]);
-    segs.push(seg("输入", input));
+    vec![seg("全局", global), seg("输入", input)]
+}
+
+/// 视频编码、滤镜、帧率三段；`pass` 是两遍编码的第几遍
+fn video_segments(
+    v: &VideoStream,
+    plan: &TranscodePlan,
+    filters: &Filters,
+    pass: Option<(u8, &str)>,
+) -> Vec<ArgSegment> {
+    let mut video = encoder_args(plan, v);
+    if let Some((n, prefix)) = pass {
+        video.extend(["-pass".to_string(), n.to_string(), "-passlogfile".to_string(), prefix.to_string()]);
+    }
+    let mut segs = vec![seg("视频", video)];
+    if let Some(vf) = &filters.vf {
+        segs.push(seg("滤镜", vec!["-vf".into(), vf.clone()]));
+    }
+    // 实测：fps 滤镜会丢最后一帧，-vsync 在 9.0 已移除，唯一正确写法是 -fps_mode:v cfr 加 -r
+    match plan.video.fps {
+        FpsPolicy::Cfr { fps } => {
+            segs.push(seg("帧率", vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(fps)]))
+        }
+        FpsPolicy::Cap { max } if v.fps_nominal > max => {
+            segs.push(seg("帧率", vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(max)]));
+        }
+        _ => {}
+    }
+    segs
+}
+
+/// 两遍编码的第一遍：只编码视频做分析，输出丢弃。其余模式返回 None
+pub fn build_first_pass(media: &MediaInfo, plan: &TranscodePlan, output: &Path) -> Option<Vec<ArgSegment>> {
+    let v = media.video.first().filter(|_| two_pass(plan))?;
+    let filters = prepared_filters(media, plan);
+    let prefix = passlog_prefix(output);
+    let mut segs = head_segments(media, plan, &filters);
+    segs.push(seg("映射", vec!["-map".into(), format!("0:{}", v.index)]));
+    segs.extend(video_segments(v, plan, &filters, Some((1, &prefix))));
+    segs.push(seg("封装", strings(&["-f", "null"])));
+    segs.push(seg("输出", strings(&["-"])));
+    Some(segs)
+}
+
+/// 生成完整命令（分段）。`output` 是实际写入的路径（通常是 `.vidforge-part` 临时文件）；`_caps` 预留给
+/// 依赖环境的写法（例如将来按平台选择硬解方式），现有规则都已体现在计划里。两遍编码时这是第二遍
+pub fn build_arg_segments(
+    media: &MediaInfo,
+    plan: &TranscodePlan,
+    _caps: &Capabilities,
+    output: &Path,
+) -> Vec<ArgSegment> {
+    let v = media.video.first();
+    let vp = &plan.video;
+    let filters = prepared_filters(media, plan);
+    let mut segs = head_segments(media, plan, &filters);
 
     // 映射
     // 按分析得到的流序号映射：`0:v:0` 会把排在前面的封面图也算进去
@@ -375,20 +499,8 @@ pub fn build_arg_segments(
     // 视频
     match v {
         Some(v) if vp.action == StreamAction::Encode => {
-            segs.push(seg("视频", encoder_args(plan, v)));
-            if let Some(vf) = &filters.vf {
-                segs.push(seg("滤镜", vec!["-vf".into(), vf.clone()]));
-            }
-            // 实测：fps 滤镜会丢最后一帧，-vsync 在 9.0 已移除，唯一正确写法是 -fps_mode:v cfr 加 -r
-            match vp.fps {
-                FpsPolicy::Cfr { fps } => {
-                    segs.push(seg("帧率", vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(fps)]))
-                }
-                FpsPolicy::Cap { max } if v.fps_nominal > max => {
-                    segs.push(seg("帧率", vec!["-fps_mode:v".into(), "cfr".into(), "-r".into(), fps_arg(max)]));
-                }
-                _ => {}
-            }
+            let prefix = passlog_prefix(output);
+            segs.extend(video_segments(v, plan, &filters, two_pass(plan).then_some((2, prefix.as_str()))));
         }
         _ => segs.push(seg("视频", strings(&["-c:v", "copy"]))),
     }

@@ -4,4 +4,8 @@ export type Estimate = { sizeMin: number, sizeMax: number, timeMinSec: number, t
 /**
  * 输出 / 源 的体积比，取区间中值
  */
-ratio: number, };
+ratio: number, 
+/**
+ * 预计的平均视频码率（bps）；原样封装时是源的视频码率。界面切到按码率编码时以它为起始值
+ */
+videoBps: number, };

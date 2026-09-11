@@ -1,0 +1,17 @@
+[package]
+name = "vidforge-wasm"
+description = "把 vidforge-core 的决策引擎编译成 WebAssembly，给浏览器预览与前端测试用（桌面应用走 Tauri 命令，不用它）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vidforge-core = { path = "../vidforge-core" }
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "=0.2.128"

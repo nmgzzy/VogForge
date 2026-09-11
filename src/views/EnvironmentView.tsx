@@ -15,7 +15,7 @@ import {
 import { backend } from "@/backend";
 import type { Capabilities, Codec, EncoderProbe, FailureKind, LocateSource, Vendor } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { CODEC_LABEL, VENDOR_LABEL } from "@/mock/engine/encoders";
+import { CODEC_LABEL, VENDOR_LABEL } from "@/lib/encoders";
 import { useCapabilities } from "@/stores/capability";
 import { useSettings } from "@/stores/settings";
 import { Badge, Button, ProgressBar } from "@/components/ui";

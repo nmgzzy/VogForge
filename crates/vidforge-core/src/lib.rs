@@ -8,6 +8,7 @@ pub mod external;
 pub mod ffmpeg;
 pub mod import;
 pub mod model;
+pub mod output;
 pub mod pipeline;
 pub mod sysinfo;
 pub mod util;

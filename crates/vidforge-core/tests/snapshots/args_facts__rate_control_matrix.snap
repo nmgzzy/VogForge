@@ -1,0 +1,36 @@
+---
+source: crates/vidforge-core/tests/args_facts.rs
+expression: "lines.join(\"\\n\")"
+---
+libx265            Quality                          -c:v libx265 -pix_fmt yuv420p10le -preset medium -crf 20 -x265-params repeat-headers=1
+libx265            Bitrate { kbps: 6000 }           -c:v libx265 -pix_fmt yuv420p10le -preset medium -b:v 6000k -maxrate 9000k -bufsize 18000k -x265-params repeat-headers=1
+libx265            Capped { kbps: 8000 }            -c:v libx265 -pix_fmt yuv420p10le -preset medium -crf 20 -maxrate 8000k -bufsize 16000k -x265-params repeat-headers=1
+libx265            TwoPass { kbps: 5000 }           -c:v libx265 -pix_fmt yuv420p10le -preset medium -b:v 5000k -x265-params repeat-headers=1 -pass 2 -passlogfile D:\转码输出\DJI_20260812_0142_2160p_hevc.mkv.2pass
+libx264            Quality                          -c:v libx264 -pix_fmt yuv420p10le -profile:v high10 -preset medium -crf 18
+libx264            Bitrate { kbps: 6000 }           -c:v libx264 -pix_fmt yuv420p10le -profile:v high10 -preset medium -b:v 6000k -maxrate 9000k -bufsize 18000k
+libx264            Capped { kbps: 8000 }            -c:v libx264 -pix_fmt yuv420p10le -profile:v high10 -preset medium -crf 18 -maxrate 8000k -bufsize 16000k
+libx264            TwoPass { kbps: 5000 }           -c:v libx264 -pix_fmt yuv420p10le -profile:v high10 -preset medium -b:v 5000k -pass 2 -passlogfile D:\转码输出\DJI_20260812_0142_2160p_hevc.mkv.2pass
+libsvtav1          Quality                          -c:v libsvtav1 -pix_fmt yuv420p10le -preset 6 -crf 26 -svtav1-params tune=0
+libsvtav1          Bitrate { kbps: 6000 }           -c:v libsvtav1 -pix_fmt yuv420p10le -preset 6 -b:v 6000k -svtav1-params tune=0
+libsvtav1          Capped { kbps: 8000 }            -c:v libsvtav1 -pix_fmt yuv420p10le -preset 6 -crf 26 -maxrate 8000k -svtav1-params tune=0
+libsvtav1          TwoPass { kbps: 5000 }           -c:v libsvtav1 -pix_fmt yuv420p10le -preset 6 -b:v 5000k -svtav1-params tune=0 -pass 2 -passlogfile D:\转码输出\DJI_20260812_0142_2160p_hevc.mkv.2pass
+hevc_qsv           Quality                          -c:v hevc_qsv -pix_fmt p010le -profile:v main10 -preset medium -global_quality 21
+hevc_qsv           Bitrate { kbps: 6000 }           -c:v hevc_qsv -pix_fmt p010le -profile:v main10 -preset medium -b:v 6000k -maxrate 9000k -bufsize 18000k
+hevc_qsv           Capped { kbps: 8000 }            -c:v hevc_qsv -pix_fmt p010le -profile:v main10 -preset medium -global_quality 21 -b:v 5333k -maxrate 8000k -bufsize 16000k
+hevc_qsv           TwoPass { kbps: 5000 }           -c:v hevc_qsv -pix_fmt p010le -profile:v main10 -preset medium -b:v 5000k -maxrate 7500k -bufsize 15000k
+av1_qsv            Quality                          -c:v av1_qsv -pix_fmt p010le -preset medium -global_quality 21
+av1_qsv            Bitrate { kbps: 6000 }           -c:v av1_qsv -pix_fmt p010le -preset medium -b:v 6000k -maxrate 9000k -bufsize 18000k
+av1_qsv            Capped { kbps: 8000 }            -c:v av1_qsv -pix_fmt p010le -preset medium -b:v 5333k -maxrate 7999k -bufsize 15998k
+av1_qsv            TwoPass { kbps: 5000 }           -c:v av1_qsv -pix_fmt p010le -preset medium -b:v 5000k -maxrate 7500k -bufsize 15000k
+hevc_nvenc         Quality                          -c:v hevc_nvenc -pix_fmt p010le -profile:v main10 -preset p6 -tune hq -rc vbr -b:v 0 -cq 23
+hevc_nvenc         Bitrate { kbps: 6000 }           -c:v hevc_nvenc -pix_fmt p010le -profile:v main10 -preset p6 -tune hq -rc vbr -b:v 6000k -maxrate 9000k -bufsize 18000k
+hevc_nvenc         Capped { kbps: 8000 }            -c:v hevc_nvenc -pix_fmt p010le -profile:v main10 -preset p6 -tune hq -rc vbr -b:v 0 -cq 23 -maxrate 8000k -bufsize 16000k
+hevc_nvenc         TwoPass { kbps: 5000 }           -c:v hevc_nvenc -pix_fmt p010le -profile:v main10 -preset p6 -tune hq -rc vbr -b:v 5000k -maxrate 7500k -bufsize 15000k
+hevc_amf           Quality                          -c:v hevc_amf -pix_fmt p010le -quality quality -rc cqp -qp_i 21 -qp_p 21
+hevc_amf           Bitrate { kbps: 6000 }           -c:v hevc_amf -pix_fmt p010le -quality quality -rc vbr_peak -b:v 6000k -maxrate 9000k -bufsize 18000k
+hevc_amf           Capped { kbps: 8000 }            -c:v hevc_amf -pix_fmt p010le -quality quality -rc vbr_peak -b:v 5333k -maxrate 7999k -bufsize 15998k
+hevc_amf           TwoPass { kbps: 5000 }           -c:v hevc_amf -pix_fmt p010le -quality quality -rc vbr_peak -b:v 5000k -maxrate 7500k -bufsize 15000k
+hevc_videotoolbox  Quality                          -c:v hevc_videotoolbox -pix_fmt p010le -profile:v main10 -q:v 68
+hevc_videotoolbox  Bitrate { kbps: 6000 }           -c:v hevc_videotoolbox -pix_fmt p010le -profile:v main10 -b:v 6000k
+hevc_videotoolbox  Capped { kbps: 8000 }            -c:v hevc_videotoolbox -pix_fmt p010le -profile:v main10 -b:v 5333k
+hevc_videotoolbox  TwoPass { kbps: 5000 }           -c:v hevc_videotoolbox -pix_fmt p010le -profile:v main10 -b:v 5000k

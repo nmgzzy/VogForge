@@ -1,12 +1,12 @@
+import { useMemo } from "react";
 import { Info } from "lucide-react";
 import type { Codec, Container, FpsInsight, MediaInfo, PlanResult, QualityTier, TranscodePlan } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { channelLabel, formatFps } from "@/lib/format";
+import { CODEC_LABEL, canTonemap, codecAvailable, qualityValue, VENDOR_LABEL } from "@/lib/encoders";
+import { encoderMeta, engineMeta, videoHints } from "@/lib/engine";
+import { channelLabel, formatBitrate, formatFps } from "@/lib/format";
 import { useCapabilities } from "@/stores/capability";
 import { useProject } from "@/stores/project";
-import { CODEC_LABEL, codecAvailable, defaultPreset, qualityMeta, qualityValue, VENDOR_LABEL } from "@/mock/engine/encoders";
-import { isExtremeVfr, recommendCfrTarget, STANDARD_FPS } from "@/mock/engine/fps";
-import { pickTonemap } from "@/mock/engine/color";
 import { Badge, Field, Section, Segmented, Select, Switch } from "./ui";
 
 const QUALITY_OPTIONS: { value: QualityTier; label: string }[] = [
@@ -21,15 +21,16 @@ const RESOLUTIONS = ["2160", "1440", "1080", "720", "480"] as const;
 /** 帧率：一行开关 + 目标帧率 + 帧数变化；只在需要时多一行提示 */
 export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: TranscodePlan; insight?: FpsInsight }) {
   const patch = useProject((s) => s.patchPlan);
+  const hints = useMemo(() => videoHints(media), [media]);
   const v = media.video[0];
-  if (!v) return null;
+  if (!v || !hints) return null;
   const cfr = plan.video.fps.kind === "cfr";
-  const recommended = recommendCfrTarget(v);
+  const recommended = hints.recommendedFps;
   const target = plan.video.fps.kind === "cfr" ? plan.video.fps.fps : recommended;
 
   let hint: { text: string; tone: "vfr" | "warn" } | undefined;
   if (v.isVfr && !cfr) hint = { text: "导入剪辑软件前建议开启，否则音画会随时间逐渐错位", tone: "vfr" };
-  else if (cfr && isExtremeVfr(v)) hint = { text: "源帧率波动大，会复制大量帧，编码耗时明显增加", tone: "warn" };
+  else if (cfr && hints.extremeVfr) hint = { text: "源帧率波动大，会复制大量帧，编码耗时明显增加", tone: "warn" };
 
   return (
     <div>
@@ -61,7 +62,7 @@ export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: T
                   p.video.fps = { kind: "cfr", fps: Number(val) };
                 })
               }
-              options={STANDARD_FPS.map((s) => ({
+              options={engineMeta().standardFps.map((s) => ({
                 value: String(s.value),
                 label: `${s.label} fps${Math.abs(s.value - recommended) < 1e-6 ? " 推荐" : ""}`,
               }))}
@@ -119,7 +120,10 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
   const vp = plan.video;
   const copy = vp.action === "copy";
   const isHdr = !!v && v.color.hdrKind !== "none";
-  const meta = qualityMeta(vp.encoder);
+  const meta = encoderMeta(vp.encoder);
+  const rc = vp.rateControl;
+  // 按码率编码时画质档位不起作用；限峰值仍按档位编码
+  const byBitrate = rc.kind === "bitrate" || rc.kind === "two_pass";
   const shortEdge = v ? Math.min(v.width, v.height) : 0;
 
   const encoderOptions = [
@@ -143,9 +147,16 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
       )}
 
       <div className={cn("grid gap-x-5 gap-y-3.5 md:grid-cols-2", copy && "pointer-events-none opacity-40")}>
-        <Field label="画质" hint={`${meta.param} ${vp.qualityValue}`}>
+        <Field
+          label="画质"
+          hint={
+            byBitrate
+              ? `${rc.kind === "two_pass" ? "两遍 · " : ""}平均 ${formatBitrate(rc.kbps * 1000)}`
+              : `${meta.param} ${vp.qualityValue}${rc.kind === "capped" ? ` · 峰值 ${formatBitrate(rc.kbps * 1000)}` : ""}`
+          }
+        >
           <Segmented
-            className="w-full"
+            className={cn("w-full", byBitrate && "pointer-events-none opacity-40")}
             value={vp.quality}
             options={QUALITY_OPTIONS}
             onChange={(q) =>
@@ -211,8 +222,8 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
                 } else {
                   p.video.encoderAuto = false;
                   p.video.encoder = val as typeof p.video.encoder;
+                  // preset 不属于新编码器时由引擎换成它的默认值
                   p.video.qualityValue = qualityValue(p.video.encoder, p.video.quality);
-                  p.video.preset = defaultPreset(p.video.encoder, p.scenario);
                 }
               })
             }
@@ -246,8 +257,8 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
                 {
                   value: "tonemap",
                   label: "转为 SDR",
-                  disabled: !pickTonemap(caps),
-                  title: pickTonemap(caps) ? "做色调映射，适合手机与普通屏幕" : "当前 ffmpeg 没有可用的色调映射滤镜",
+                  disabled: !canTonemap(caps),
+                  title: canTonemap(caps) ? "做色调映射，适合手机与普通屏幕" : "当前 ffmpeg 没有可用的色调映射滤镜",
                 },
               ]}
               onChange={(a) =>

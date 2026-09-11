@@ -36,7 +36,7 @@ pub enum Vendor {
 impl Vendor {
     pub fn label(self) -> &'static str {
         match self {
-            Vendor::Software => "CPU 软件编码",
+            Vendor::Software => "CPU 软编",
             Vendor::Intel => "Intel QSV",
             Vendor::Nvidia => "NVIDIA NVENC",
             Vendor::Amd => "AMD AMF",

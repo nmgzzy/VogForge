@@ -1,5 +1,5 @@
 import { BookmarkPlus } from "lucide-react";
-import { SCENARIOS } from "@/mock/engine";
+import { SCENARIOS } from "@/lib/scenarios";
 import { Badge, Button, Empty } from "@/components/ui";
 
 /** 内置场景的参数摘要。与 docs/design.md 4.5 的预设表保持一致 */

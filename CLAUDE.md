@@ -6,9 +6,9 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 
 ## 当前阶段
 
-阶段 0–4 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 命令构建（`crates/vidforge-core/src/pipeline/`）都已接通。转码页的推荐与保真度求解仍由前端 TS 引擎 `src/mock/engine/` 驱动，阶段 5 迁到 Rust。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
+阶段 0–5 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 决策引擎（`crates/vidforge-core/src/pipeline/`：场景推荐、保真度求解、命令构建、预估、码率控制）都已接通。引擎编译成 WebAssembly 驱动界面，没有第二份 TS 实现。下一步是阶段 6 执行与队列（队列页目前仍是 `src/mock/queue.ts` 的模拟）。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
 
-**两套引擎必须一致。** 在前端切到 Rust 之前，命令规则同时存在于 `src/mock/engine/args.ts` 与 `crates/vidforge-core/src/pipeline/args.rs`。改规则时两边一起改，然后 `UPDATE_GOLDEN=1 pnpm vitest run src/mock/engine/golden.test.ts` 重写 `tests/fixtures/golden/engine.json`，再跑 `cargo test -p vidforge-core --test golden_engine` 确认 Rust 逐条一致。insta 快照变化时用 `INSTA_UPDATE=always cargo test -p vidforge-core --test args_facts` 重写，再审阅 diff。
+**改引擎规则后的流程。** 先让 Rust 测试反映新规则：有意的产出变化用 `UPDATE_GOLDEN=1 cargo test -p vidforge-core --test golden_engine` 重写 `tests/fixtures/golden/engine.json`，`INSTA_UPDATE=always cargo test -p vidforge-core` 重写快照，逐个审阅 diff。然后 `pnpm wasm` 重新生成 `src/wasm/pkg/` 并一起提交；忘了这一步 `src/lib/engine.golden.test.ts` 会失败（它用 wasm 重算回归样本）。
 
 ## 常用命令
 
@@ -16,12 +16,13 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 pnpm tauri dev                                  # 桌面应用（会先启动 vite）
 pnpm dev                                        # 只起前端：http://localhost:1420，strictPort，用 mock 后端
 pnpm test                                       # 前端 vitest
-pnpm vitest run src/mock/engine/engine.test.ts  # 单个文件
+pnpm vitest run src/lib/engine.test.ts          # 单个文件
 pnpm vitest run -t "quoteArg"                   # 按用例名过滤
 pnpm typecheck                                  # tsc -b --noEmit（TypeScript 7）
 pnpm test:rust                                  # cargo test --workspace
 cargo test -p vidforge-core parse::             # 按模块路径过滤 Rust 用例
 pnpm bindings                                   # 改了 Rust 模型后重新生成 src/bindings/
+pnpm wasm                                       # 改了引擎后重新生成 src/wasm/pkg/（需 wasm32 target 与 wasm-bindgen-cli 0.2.128）
 cargo clippy --workspace --all-targets          # Rust lint，要求零告警
 cargo fmt --all                                 # rustfmt.toml：max_width 120
 ```
@@ -40,12 +41,15 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 
 前端通过 `src/backend/` 的 `Backend` 接口访问后端：Tauri 窗口里是 `invoke` + 事件（`tauri.ts`），浏览器预览与 vitest 里是 `mock.ts`，由 `isTauri()` 自动选择。store 只依赖这个接口。
 
-`src/mock/engine/` 是尚未迁移的那部分 Rust 引擎的 TypeScript 原型，模块与未来的 Rust 模块一一对应。接入后端后前端不再做任何编码决策（设计文档 6.5），所以改引擎规则等于在改 Rust 实现的规格。引擎对外只有 `index.ts` 的四个入口：
+决策引擎的入口在 `vidforge-core/src/pipeline/mod.rs`，`crates/vidforge-wasm` 把它们导出成 JSON 字符串进出的 wasm 函数，前端经 `src/lib/engine.ts` 同步调用（设计文档 6.5）：
 
 - `recommendPlan(media, scenario, caps)` —— 按场景生成 `TranscodePlan`
-- `updatePlan(plan, media, caps)` —— 用户改参数后调用 `normalizePlan`，把计划修回自洽状态
+- `updatePlan(plan, media, caps)` —— 用户改参数后调用 `normalize_plan`，把计划修回自洽状态（重选编码器、换掉不属于新编码器的 preset、拉回越界码率、换掉编码器做不到的码率控制……）
 - `applyFix(plan, fixId, media, caps)` —— 执行保真度冲突的一键修正，之后同样 normalize
-- `evaluate(media, plan, caps)` —— 派生界面所需的全部内容：推荐理由、保真度求解结果、ffmpeg argv、预估
+- `evaluate(media, plan, caps, settings?, date?)` —— 派生界面所需的全部内容：推荐理由、保真度、分段命令、两遍编码的第一遍、预估；输出路径按设置里的目录与命名模板计算
+- `engineMeta()` / `encoderMeta(id)` / `videoHints(media)` —— 界面用的规则表（质量刻度、preset、支持的码率控制、标准帧率档）与帧率建议
+
+引擎必须先初始化：`main.tsx` 里 `await initEngine()` 之后才动态导入 `App`（部分 store 在模块加载时就调用引擎），vitest 在 `src/test-setup.ts` 里同步初始化。`src/lib/` 里的 `scenarios.ts`、`encoders.ts`、`fidelity.ts` 只放显示用的文案与对 `Capabilities` 的简单查询，不放决策规则。示例素材与环境（`src/mock/media.ts`、`capabilities.ts`）读的是 `crates/vidforge-core/tests/fixtures/samples/` 的 JSON，与 Rust 行为测试共用。
 
 `PlanResult` 是派生数据，从不存储。`stores/project.ts` 只存 `files` 与按媒体 id 索引的 `plans`，所有修改走 `patchPlan`（内部 `structuredClone` 后调 `updatePlan`）；能力快照变化时 `App.tsx` 调 `refreshPlans` 重新整理全部计划。Zustand v5 里返回对象的 selector 必须包 `useShallow`，否则会无限重渲染。
 
@@ -53,7 +57,7 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 
 `docs/ffmpeg-facts.md` 记录全部已核实的 ffmpeg 行为，每条标注来源（源码 / 文档 / 本机实测）。其中很多规则与直觉相反，例如 9.0 已移除 `-vsync`、`-dolbyvision` 默认 auto 必须显式传 0 或 1、转固定帧率不能用 fps 滤镜、不支持的 `-pix_fmt` 会被静默替换成 8bit。改参数生成或探测逻辑前先查这份文档，不要凭记忆；新验证的行为写进去并标 [实测]。
 
-`src/mock/engine/engine.test.ts` 开头的 `it.each(ALL)` 把每条事实在 `mock/media.ts` 的 6 个示例素材 × 全部场景上各断言一遍。约定：新增一条事实就补一条断言；改参数生成后这组断言必须全绿。
+`crates/vidforge-core/tests/args_facts.rs` 把每条事实在约 200 个回归样本上各断言一遍，`engine_behavior.rs` 断言推荐与求解的行为，`transcode_real.rs` 在真实 ffmpeg 上核对输出。约定：新增一条事实就补一条断言；改参数生成后这些断言必须全绿。
 
 ## 文档约定
 
@@ -64,6 +68,11 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 ## 容易踩的坑
 
 - 在这台机器上，Bash 工具会把 heredoc 里的 `\\` 折叠成 `\`（经 heredoc 传给 python 也一样）。含反斜杠的文件内容（Windows 路径、正则、转义）一律用 Write / Edit 写。
+- 同样的折叠会把经 heredoc 传给 python 的 `\\n` 变成 `\n`，写进源码就是字符串里断了一行。要写 `\n` 转义时用 `chr(92)` 拼，或用 Edit。
+- 停掉后台的 `pnpm tauri dev` 只会结束外层 shell，vite（占 1420）、`cargo run` 与 `vidforge.exe` 会留下来，要按进程号结束。WebView2 按应用共用数据目录，已有一个实例在跑时，第二个实例（例如另一个调试端口）拿不到调试端口。
+- 决策引擎的 wasm 需要 CSP `script-src 'wasm-unsafe-eval'`（`tauri.conf.json`）。开发模式不下发 CSP，只有嵌入资源的构建（`pnpm tauri build`）才会暴露这类问题。
+- 引擎代码（会编译成 wasm）里不要用 `std::path` 解析媒体路径：wasm 上它只认 `/`，`D:\素材\a.mov` 会变成没有父目录的文件名。用 `output.rs` 里按字符串处理、两种分隔符都认的函数。
+- `wasm-bindgen` 依赖锁定为 `=0.2.128`，必须与本机 `wasm-bindgen-cli` 版本一致，否则 `pnpm wasm` 生成的胶水代码与 wasm 不匹配。
 - 复制命令用的 `quoteArg`（`src/lib/format.ts`）默认面向 PowerShell：逗号是数组运算符、行首 `@` 是 splatting，所以 `SAFE_ARG` 刻意不含这两个字符，不要放宽。
 - 用户填写的附加参数用 `splitArgs` 解析，支持引号，不要改回按空格拆分。
 - 布局按容器宽度响应（Tailwind v4 的 `@container` 与 `@min-[900px]:`），不是按视口宽度。

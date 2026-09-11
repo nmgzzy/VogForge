@@ -64,6 +64,8 @@ export type { FpsPolicy } from "@/bindings/FpsPolicy";
 export type { HdrAction } from "@/bindings/HdrAction";
 export type { PlanResult } from "@/bindings/PlanResult";
 export type { QualityTier } from "@/bindings/QualityTier";
+export type { RateControl } from "@/bindings/RateControl";
+export type { RateControlKind } from "@/bindings/RateControlKind";
 export type { ResolutionPreset } from "@/bindings/ResolutionPreset";
 export type { Scenario } from "@/bindings/Scenario";
 export type { Severity } from "@/bindings/Severity";
@@ -72,6 +74,13 @@ export type { SubtitleMode } from "@/bindings/SubtitleMode";
 export type { TrackRole } from "@/bindings/TrackRole";
 export type { TranscodePlan } from "@/bindings/TranscodePlan";
 export type { VideoPlan } from "@/bindings/VideoPlan";
+
+// 引擎的静态规则表
+export type { EncoderMeta } from "@/bindings/EncoderMeta";
+export type { EngineMeta } from "@/bindings/EngineMeta";
+export type { QualityValues } from "@/bindings/QualityValues";
+export type { StandardFpsMeta } from "@/bindings/StandardFpsMeta";
+export type { VideoHints } from "@/bindings/VideoHints";
 
 // ───────────────────────── 队列（阶段 6 迁到 Rust） ─────────────────────────
 

@@ -4270,6 +4270,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vidforge-wasm"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vidforge-core",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "vswhom"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

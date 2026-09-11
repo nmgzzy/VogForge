@@ -10,10 +10,10 @@ use vidforge_core::ffmpeg::exec::{Runner, SystemRunner, args};
 use vidforge_core::ffmpeg::probe::{probe_file, pts_is_vfr};
 use vidforge_core::model::{
     AudioCodec, AudioMode, AudioTrackPlan, Capabilities, Container, DoviAction, EncoderId, EnvStatus, FidelityRequest,
-    FpsPolicy, HdrAction, HdrKind, MediaInfo, QualityTier, ResolutionPreset, Scenario, StreamAction, SubtitleMode,
-    ToneMapPipeline, TrackRole, TranscodePlan, VideoPlan,
+    FpsPolicy, HdrAction, HdrKind, MediaInfo, QualityTier, RateControl, ResolutionPreset, Scenario, StreamAction,
+    SubtitleMode, ToneMapPipeline, TrackRole, TranscodePlan, VideoPlan,
 };
-use vidforge_core::pipeline::args::{build_arg_segments, flatten};
+use vidforge_core::pipeline::args::{build_arg_segments, build_first_pass, flatten};
 
 fn bin_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("VIDFORGE_TEST_FFMPEG")
@@ -74,6 +74,19 @@ impl Env {
         (self.probe(&out), a)
     }
 
+    /// 执行一条完整命令（首项是 "ffmpeg"），返回 stderr；`verbose` 时把日志级别提到 verbose 以便看到实际码率控制方式
+    fn run_command(&self, a: &[String], verbose: bool) -> String {
+        assert_eq!(a[0], "ffmpeg");
+        let mut a = a[1..].to_vec();
+        if verbose {
+            let i = a.iter().position(|x| x == "-loglevel").unwrap();
+            a[i + 1] = "verbose".into();
+        }
+        let r = SystemRunner.run(&self.bin.join(exe_name("ffmpeg")), &a, Duration::from_secs(300)).unwrap();
+        assert!(r.success(), "执行失败：{}\n命令：{}", r.stderr, a.join(" "));
+        r.stderr
+    }
+
     fn ffprobe_field(&self, p: &Path, select: &str, entry: &str) -> String {
         let a = args(["-v", "error", "-select_streams", select, "-show_entries", entry, "-of", "default=nw=1:nk=1"]);
         let mut a = a;
@@ -120,6 +133,7 @@ fn base_plan(encoder: EncoderId, container: Container) -> TranscodePlan {
             encoder_auto: false,
             quality: QualityTier::Standard,
             quality_value: vidforge_core::pipeline::encoders::quality_value(encoder, QualityTier::Standard),
+            rate_control: RateControl::Quality,
             preset: match encoder {
                 EncoderId::Libsvtav1 => "10".into(),
                 EncoderId::HevcQsv | EncoderId::H264Qsv | EncoderId::Av1Qsv => "veryfast".into(),
@@ -503,4 +517,50 @@ fn cover_art_is_never_encoded_as_the_video() {
     assert!(a.windows(2).any(|w| w[0] == "-map" && w[1] == map), "应按流序号映射 {map}");
     assert_eq!(out.video.len(), 1);
     assert_eq!((out.video[0].width, out.video[0].height), (640, 360), "编码的是封面而不是正片");
+}
+
+#[test]
+fn rate_control_modes_behave_as_documented() {
+    // 技术事实文档 8.2：两遍编码的两条命令都能跑通且码率贴近目标；QSV 的目标码率与限峰值分别落到 VBR 与 QVBR
+    let e = env_or_skip!();
+    let src_path = e.path("rc-src.mkv");
+    e.ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=s=1280x720:r=30:d=4",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "10",
+        &src_path.to_string_lossy(),
+    ]);
+    let src = e.probe(&src_path);
+    for enc in [EncoderId::Libx264, EncoderId::Libx265, EncoderId::Libsvtav1] {
+        let mut plan = base_plan(enc, Container::Mkv);
+        plan.video.rate_control = RateControl::TwoPass { kbps: 1500 };
+        let out = e.path(&format!("2pass-{}.mkv", enc.name()));
+        let first = flatten(&build_first_pass(&src, &plan, &out).expect("两遍编码应有第一遍"));
+        e.run_command(&first, false);
+        let second = flatten(&build_arg_segments(&src, &plan, &e.caps, &out));
+        e.run_command(&second, false);
+        let kbps = e.probe(&out).bitrate as f64 / 1000.0;
+        assert!((1200.0..=1800.0).contains(&kbps), "{}：两遍目标 1500k，实际 {kbps:.0}k", enc.name());
+    }
+
+    if !e.caps.encoder_usable(EncoderId::HevcQsv) {
+        eprintln!("跳过 QSV 部分：没有可用的 hevc_qsv");
+        return;
+    }
+    for (rc, method) in [
+        (RateControl::Bitrate { kbps: 1500 }, "(VBR)"),
+        (RateControl::Capped { kbps: 1000 }, "(QVBR)"),
+        (RateControl::Quality, "(ICQ)"),
+    ] {
+        let mut plan = base_plan(EncoderId::HevcQsv, Container::Mkv);
+        plan.video.rate_control = rc;
+        let out = e.path("qsv-rc.mkv");
+        let stderr = e.run_command(&flatten(&build_arg_segments(&src, &plan, &e.caps, &out)), true);
+        assert!(stderr.contains(method), "{rc:?} 应落到 {method}：{stderr}");
+    }
 }

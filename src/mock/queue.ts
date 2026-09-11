@@ -2,11 +2,10 @@
  * 队列演示数据与进度模拟。仅用于浏览器预览：
  * 接入后端后，进度来自 ffmpeg -progress 的块协议解析，由 Tauri 事件推送。
  */
-import type { FidelityKind, Job, JobEvent, MediaInfo, ReportItem, TranscodePlan } from "@/lib/types";
+import type { FidelityKind, Job, JobEvent, MediaInfo, ReportItem, Settings, TranscodePlan } from "@/lib/types";
+import { DEFAULT_SETTINGS } from "@/lib/defaults";
 import { formatBytes, formatDuration } from "@/lib/format";
-import { evaluate, recommendPlan, updatePlan } from "./engine";
-import { outputPath } from "./engine/args";
-import { resolveFidelity } from "./engine/fidelity";
+import { evaluate, recommendPlan, updatePlan } from "@/lib/engine";
 import { MOCK_CAPABILITIES as caps } from "./capabilities";
 import { MOCK_MEDIA } from "./media";
 
@@ -17,14 +16,20 @@ function ev(offsetSec: number, level: JobEvent["level"], message: string): JobEv
   return { at: T0 + offsetSec * 1000, level, message };
 }
 
-export function makeJob(m: MediaInfo, plan: TranscodePlan, id = `job-${Math.random().toString(36).slice(2, 9)}`): Job {
-  const r = evaluate(m, plan, caps);
+/** 命令与输出路径按入队时的设置计算，与转码页预览的一致 */
+export function makeJob(
+  m: MediaInfo,
+  plan: TranscodePlan,
+  settings: Settings = DEFAULT_SETTINGS,
+  id = `job-${Math.random().toString(36).slice(2, 9)}`,
+): Job {
+  const r = evaluate(m, plan, caps, settings);
   return {
     id,
     media: m,
     plan,
     args: r.args,
-    outputPath: outputPath(m, plan),
+    outputPath: r.args[r.args.length - 1]!,
     status: "queued",
     progress: { percent: 0, outTimeSec: 0, speed: 0, fps: 0, sizeBytes: 0, dupFrames: 0, dropFrames: 0 },
     encoderUsed: plan.video.encoder,
@@ -97,7 +102,7 @@ export function buildReport(job: Job): ReportItem[] {
   }
   items.push({ label: "音轨数", expected: `${p.audio.length} 条`, actual: `${p.audio.length} 条`, ok: true });
 
-  for (const f of resolveFidelity(m, p, caps)) {
+  for (const f of evaluate(m, p, caps).fidelity) {
     if (!p.fidelity[f.kind] || f.state === "not_applicable") continue;
     const ok = f.state === "achievable";
     items.push({
@@ -134,7 +139,7 @@ const SAMPLE_LOG = [
 export function seedJobs(): Job[] {
   // 1. 已完成：iPhone 素材归档
   const iphone = media("m-iphone");
-  const done = makeJob(iphone, recommendPlan(iphone, "archive", caps), "job-done");
+  const done = makeJob(iphone, recommendPlan(iphone, "archive", caps), DEFAULT_SETTINGS, "job-done");
   const doneSize = 243_600_000;
   Object.assign(done, {
     status: "done",
@@ -155,7 +160,7 @@ export function seedJobs(): Job[] {
 
   // 2. 运行中（CPU 票）：无人机素材归档
   const drone = media("m-drone");
-  const running = makeJob(drone, recommendPlan(drone, "archive", caps), "job-run-cpu");
+  const running = makeJob(drone, recommendPlan(drone, "archive", caps), DEFAULT_SETTINGS, "job-run-cpu");
   Object.assign(running, {
     status: "running",
     startedAt: T0 - 95_000,
@@ -172,7 +177,7 @@ export function seedJobs(): Job[] {
   const camPlan = recommendPlan(camera, "streaming", caps);
   camPlan.video.encoder = "hevc_nvenc";
   camPlan.video.encoderAuto = false;
-  const gpu = makeJob(camera, camPlan, "job-run-gpu");
+  const gpu = makeJob(camera, camPlan, DEFAULT_SETTINGS, "job-run-gpu");
   const fallbackPlan = updatePlan({ ...camPlan, video: { ...camPlan.video, encoder: "hevc_qsv", preset: "medium", qualityValue: 24 } }, camera, caps);
   Object.assign(gpu, {
     status: "running",
@@ -192,9 +197,9 @@ export function seedJobs(): Job[] {
 
   // 4、5. 排队中
   const bluray = media("m-bluray");
-  const q1 = makeJob(bluray, recommendPlan(bluray, "collection", caps), "job-q-bluray");
+  const q1 = makeJob(bluray, recommendPlan(bluray, "collection", caps), DEFAULT_SETTINGS, "job-q-bluray");
   const screen = media("m-screen");
-  const q2 = makeJob(screen, recommendPlan(screen, "editing", caps), "job-q-screen");
+  const q2 = makeJob(screen, recommendPlan(screen, "editing", caps), DEFAULT_SETTINGS, "job-q-screen");
 
   // 6. 失败：文件损坏，错误信息翻译成可行动的中文
   const broken: MediaInfo = {
@@ -204,7 +209,7 @@ export function seedJobs(): Job[] {
     path: "D:\\素材\\2026-08 京都\\IMG_3310.MOV",
     sizeBytes: 402_000_000,
   };
-  const failed = makeJob(broken, recommendPlan(broken, "archive", caps), "job-failed");
+  const failed = makeJob(broken, recommendPlan(broken, "archive", caps), DEFAULT_SETTINGS, "job-failed");
   Object.assign(failed, {
     status: "failed",
     startedAt: T0 - 300_000,

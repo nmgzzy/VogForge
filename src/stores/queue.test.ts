@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { recommendPlan } from "@/mock/engine";
+import { recommendPlan } from "@/lib/engine";
 import { MOCK_CAPABILITIES } from "@/mock/capabilities";
 import { MOCK_MEDIA } from "@/mock/media";
 import { buildReport, seedJobs } from "@/mock/queue";
 import { useQueue } from "./queue";
+import { useSettings } from "./settings";
 
 const q = () => useQueue.getState();
 const job = (id: string) => q().jobs.find((j) => j.id === id)!;
@@ -100,6 +101,20 @@ describe("queue store", () => {
     expect(added.status).toBe("queued");
     expect(added.args[0]).toBe("ffmpeg");
     expect(added.outputPath).toMatch(/_av1\.mkv$/);
+  });
+
+  it("加入队列时按当前设置计算输出路径，与转码页预览一致", () => {
+    const m = MOCK_MEDIA.find((x) => x.id === "m-drone")!;
+    const prev = useSettings.getState().settings;
+    useSettings.setState({ settings: { ...prev, outputDir: "E:/out", namingTemplate: "{name}-{scenario}" } });
+    try {
+      q().enqueue([{ media: m, plan: recommendPlan(m, "archive", MOCK_CAPABILITIES) }]);
+      const added = q().jobs.at(-1)!;
+      expect(added.outputPath).toBe("E:/out/DJI_20260812_0142-归档.mkv");
+      expect(added.args.at(-1)).toBe(added.outputPath);
+    } finally {
+      useSettings.setState({ settings: prev });
+    }
   });
 
   it("清除已完成只移除完成与取消的任务", () => {

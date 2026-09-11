@@ -2,8 +2,9 @@ import { create } from "zustand";
 import { backend } from "@/backend";
 import type { Job, JobEvent, MediaInfo, TranscodePlan } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
-import { isHardware } from "@/mock/engine/encoders";
+import { isHardware } from "@/lib/encoders";
 import { buildReport, estimatedOutputSize, makeJob, seedJobs, simulatedSpeed } from "@/mock/queue";
+import { useSettings } from "./settings";
 
 /** 演示加速倍数：让进度条在预览里肉眼可见地推进。真实进度来自 ffmpeg */
 const DEMO_ACCEL = 25;
@@ -46,7 +47,8 @@ export const useQueue = create<QueueState>((set, get) => ({
 
   enqueue: (items) =>
     set((s) => {
-      const fresh = items.map(({ media, plan }) => makeJob(media, plan));
+      const settings = useSettings.getState().settings;
+      const fresh = items.map(({ media, plan }) => makeJob(media, plan, settings));
       return { jobs: [...s.jobs, ...fresh], selectedJobId: s.selectedJobId ?? fresh[0]?.id };
     }),
 

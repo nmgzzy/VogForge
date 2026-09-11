@@ -1,15 +1,17 @@
 //! 命令构建的技术事实断言（每条对应技术事实文档里的一条结论）与关键组合的快照。
 //!
-//! 输入复用前端生成的黄金样本（见 golden_engine.rs），这样 Rust 端独立地钉住事实，而不只是"和 TS 一样"。
+//! 输入复用黄金样本（见 golden_engine.rs）：回归样本只保证"输出没变"，这里独立地钉住"输出是对的"。
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
 use vidforge_core::model::{
-    ArgSegment, Capabilities, Container, DoviAction, EncoderId, MediaInfo, StreamAction, TranscodePlan,
+    ArgSegment, Capabilities, Container, DoviAction, EncoderId, EncoderProbe, FpsPolicy, MediaInfo, RateControl,
+    StreamAction, TranscodePlan, Vendor,
 };
-use vidforge_core::pipeline::args::{build_arg_segments, flatten};
+use vidforge_core::pipeline::args::{build_arg_segments, build_first_pass, flatten};
+use vidforge_core::pipeline::update_plan;
 
 #[derive(Deserialize)]
 struct Golden {
@@ -97,9 +99,18 @@ fn facts_hold_for_every_case() {
             let want = if vp.dovi == DoviAction::Preserve { "1" } else { "0" };
             assert!(has(a, &["-dolbyvision", want]), "{name}: 缺少 -dolbyvision {want}");
         }
-        // 7.4：QSV 10bit 必须 p010le（HEVC 还要 main10），并显式指定质量
-        if encode && vp.encoder.vendor() == vidforge_core::model::Vendor::Intel {
-            assert!(has(a, &["-global_quality"]), "{name}: QSV 没有显式码率控制");
+        // 4.3：CFR 只用 -fps_mode:v cfr 搭配 -r
+        if encode && matches!(vp.fps, FpsPolicy::Cfr { .. }) {
+            assert!(a.windows(3).any(|w| w[0] == "-fps_mode:v" && w[1] == "cfr" && w[2] == "-r"), "{name}: CFR 写法");
+        }
+        // 7.8 / 2.x：硬解一律 -hwaccel auto（scale_vt 管线除外）；保留杜比视界时不硬解（hwdownload 会丢 RPU）
+        if let Some(i) = a.iter().position(|x| x == "-hwaccel") {
+            assert!(matches!(a[i + 1].as_str(), "auto" | "videotoolbox"), "{name}: -hwaccel {}", a[i + 1]);
+            assert!(!(encode && vp.dovi == DoviAction::Preserve), "{name}: 保留杜比视界却用了硬解");
+        }
+        // 7.4：QSV 10bit 必须 p010le（HEVC 还要 main10），并显式指定码率控制
+        if encode && vp.encoder.vendor() == Vendor::Intel {
+            assert!(has(a, &["-global_quality"]) || has(a, &["-b:v"]), "{name}: QSV 没有显式码率控制");
             if vp.bit_depth == 10 {
                 assert!(has(a, &["-pix_fmt", "p010le"]), "{name}: QSV 10bit 不是 p010le");
                 if vp.encoder == EncoderId::HevcQsv {
@@ -108,7 +119,7 @@ fn facts_hold_for_every_case() {
             }
         }
         // 8.2：NVENC 的 -cq 必须配 -rc vbr -b:v 0
-        if encode && vp.encoder.vendor() == vidforge_core::model::Vendor::Nvidia {
+        if encode && vp.encoder.vendor() == Vendor::Nvidia && vp.rate_control == RateControl::Quality {
             assert!(has(a, &["-rc", "vbr", "-b:v", "0", "-cq"]), "{name}: NVENC 恒定质量写法不对");
         }
         // 2.5：AV1 不用 libaom
@@ -158,4 +169,122 @@ fn key_combinations_snapshot() {
         let text = b.segs.iter().map(|s| format!("{:<4} {}", s.label, s.args.join(" "))).collect::<Vec<_>>().join("\n");
         insta::assert_snapshot!(snap, text);
     }
+}
+
+fn value_of<'a>(a: &'a [String], key: &str) -> Option<&'a str> {
+    a.iter().position(|x| x == key).map(|i| a[i + 1].as_str())
+}
+
+fn kbps(v: &str) -> u32 {
+    v.trim_end_matches('k').parse().unwrap()
+}
+
+/// 各厂商编码器都可用（NVENC / AMF / VideoToolbox 只核对写法）
+fn every_encoder(g: &Golden) -> Capabilities {
+    let mut c = g.caps["dev"].clone();
+    for id in [EncoderId::HevcNvenc, EncoderId::HevcAmf, EncoderId::HevcVideotoolbox] {
+        c.encoders.retain(|e| e.id != id);
+        let (vendor, codec) = (id.vendor(), id.codec());
+        c.encoders.push(EncoderProbe { id, vendor, codec, usable: true, ten_bit: true, error: None, failure: None });
+    }
+    c
+}
+
+#[test]
+fn rate_control_facts_hold_for_every_case() {
+    // 技术事实文档 8.2：码率控制的写法错了往往不报错，只是静默换成别的模式
+    let g = golden();
+    let caps = every_encoder(&g);
+    let mut checked = 0;
+    for c in g.cases.iter().filter(|c| c.plan.video.action == StreamAction::Encode) {
+        for rc in [
+            RateControl::Bitrate { kbps: 6000 },
+            RateControl::Capped { kbps: 8000 },
+            RateControl::TwoPass { kbps: 5000 },
+        ] {
+            let mut plan = c.plan.clone();
+            plan.video.rate_control = rc;
+            let plan = update_plan(plan, &c.media, &caps);
+            let out = Path::new(&c.output);
+            let a = flatten(&build_arg_segments(&c.media, &plan, &caps, out));
+            let (vp, name) = (&plan.video, format!("{} / {rc:?}", c.name));
+            let family = vidforge_core::pipeline::encoders::family(vp.encoder);
+            use vidforge_core::pipeline::encoders::Family;
+            // x265 只给 maxrate 不给 bufsize 会静默忽略上限
+            if has(&a, &["-maxrate"]) && family != Family::SvtAv1 {
+                assert!(has(&a, &["-bufsize"]), "{name}: 有 maxrate 没有 bufsize");
+            }
+            // QSV：只给 global_quality + maxrate 会落到 CQP；目标码率等于峰值会落到 CBR
+            if family == Family::Qsv {
+                if let Some(max) = value_of(&a, "-maxrate") {
+                    let target = value_of(&a, "-b:v").unwrap_or_else(|| panic!("{name}: QSV 有峰值没有目标码率"));
+                    assert!(kbps(target) < kbps(max), "{name}: QSV 目标码率不小于峰值");
+                }
+            }
+            match vp.rate_control {
+                RateControl::Quality => panic!("{name}: 码率控制被丢掉了"),
+                RateControl::Bitrate { kbps: k } | RateControl::TwoPass { kbps: k } => {
+                    assert_eq!(value_of(&a, "-b:v"), Some(format!("{k}k").as_str()), "{name}");
+                    for q in ["-crf", "-global_quality", "-cq", "-qp_i", "-q:v"] {
+                        assert!(!has(&a, &[q]), "{name}: 按码率编码却出现 {q}");
+                    }
+                }
+                RateControl::Capped { kbps: k } => {
+                    assert_eq!(value_of(&a, "-maxrate"), Some(format!("{k}k").as_str()), "{name}");
+                    assert!(
+                        ["-crf", "-global_quality", "-cq"].iter().any(|q| has(&a, &[q])),
+                        "{name}: 限峰值却没有质量参数"
+                    );
+                }
+            }
+            // 两遍只给软件编码器；第一遍与第二遍用同一个统计文件前缀
+            let first = build_first_pass(&c.media, &plan, out);
+            if let RateControl::TwoPass { .. } = vp.rate_control {
+                assert!(!vp.encoder.is_hardware(), "{name}: 两遍用了硬件编码器");
+                let first = flatten(&first.unwrap());
+                assert_eq!(value_of(&first, "-passlogfile"), value_of(&a, "-passlogfile"), "{name}");
+                assert_eq!((value_of(&first, "-pass"), value_of(&a, "-pass")), (Some("1"), Some("2")), "{name}");
+            } else {
+                assert!(first.is_none() && !has(&a, &["-pass"]), "{name}: 单遍命令出现了 -pass");
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 300, "只核对了 {checked} 个组合");
+}
+
+#[test]
+fn rate_control_matrix_snapshot() {
+    let g = golden();
+    let caps = every_encoder(&g);
+    let case = g.cases.iter().find(|c| c.name == "dev/m-drone/archive").unwrap();
+    let out = Path::new(&case.output);
+    let mut lines = Vec::new();
+    for enc in [
+        EncoderId::Libx265,
+        EncoderId::Libx264,
+        EncoderId::Libsvtav1,
+        EncoderId::HevcQsv,
+        EncoderId::Av1Qsv,
+        EncoderId::HevcNvenc,
+        EncoderId::HevcAmf,
+        EncoderId::HevcVideotoolbox,
+    ] {
+        for rc in [
+            RateControl::Quality,
+            RateControl::Bitrate { kbps: 6000 },
+            RateControl::Capped { kbps: 8000 },
+            RateControl::TwoPass { kbps: 5000 },
+        ] {
+            let mut plan = case.plan.clone();
+            (plan.video.codec, plan.video.encoder, plan.video.encoder_auto) = (enc.codec(), enc, false);
+            plan.video.quality_value = vidforge_core::pipeline::encoders::quality_value(enc, plan.video.quality);
+            plan.video.rate_control = rc;
+            let plan = update_plan(plan, &case.media, &caps);
+            let segs = build_arg_segments(&case.media, &plan, &caps, out);
+            let video = segs.iter().find(|s| s.label == "视频").unwrap().args.join(" ");
+            lines.push(format!("{:<18} {:<32} {video}", enc.name(), format!("{rc:?}")));
+        }
+    }
+    insta::assert_snapshot!("rate_control_matrix", lines.join("\n"));
 }

@@ -125,6 +125,57 @@ pub enum FpsPolicy {
     Cap { max: f64 },
 }
 
+/// 码率控制（需求 F-3.3）。码率单位都是 kbps
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum RateControl {
+    /// 恒定质量：CRF / CQ / ICQ，数值取 `quality_value`
+    #[default]
+    Quality,
+    /// 目标平均码率，峰值不超过 1.5 倍
+    Bitrate { kbps: u32 },
+    /// 恒定质量，但峰值码率不超过 `kbps`（给网络串流留余量）
+    Capped { kbps: u32 },
+    /// 两遍编码：第一遍分析画面复杂度，第二遍按目标平均码率分配。只有软件编码器支持
+    TwoPass { kbps: u32 },
+}
+
+/// 码率控制方式（不含数值），界面据此列出编码器支持的选项
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RateControlKind {
+    Quality,
+    Bitrate,
+    Capped,
+    TwoPass,
+}
+
+impl RateControlKind {
+    pub const ALL: [RateControlKind; 4] =
+        [RateControlKind::Quality, RateControlKind::Bitrate, RateControlKind::Capped, RateControlKind::TwoPass];
+}
+
+impl RateControl {
+    /// 按码率计的模式（不看质量数值）
+    pub fn target_kbps(self) -> Option<u32> {
+        match self {
+            RateControl::Bitrate { kbps } | RateControl::TwoPass { kbps } => Some(kbps),
+            _ => None,
+        }
+    }
+
+    pub fn kind(self) -> RateControlKind {
+        match self {
+            RateControl::Quality => RateControlKind::Quality,
+            RateControl::Bitrate { .. } => RateControlKind::Bitrate,
+            RateControl::Capped { .. } => RateControlKind::Capped,
+            RateControl::TwoPass { .. } => RateControlKind::TwoPass,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -163,6 +214,8 @@ pub struct VideoPlan {
     pub quality: QualityTier,
     /// 当前编码器下的原生质量数值（CRF / CQ / global_quality …）
     pub quality_value: i32,
+    #[serde(default)]
+    pub rate_control: RateControl,
     pub preset: String,
     #[ts(type = "8 | 10")]
     pub bit_depth: u8,
@@ -372,6 +425,8 @@ pub struct Estimate {
     pub time_max_sec: f64,
     /// 输出 / 源 的体积比，取区间中值
     pub ratio: f64,
+    /// 预计的平均视频码率（bps）；原样封装时是源的视频码率。界面切到按码率编码时以它为起始值
+    pub video_bps: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -402,6 +457,11 @@ pub struct PlanResult {
     pub decisions: Vec<Decision>,
     pub fidelity: Vec<FidelityItem>,
     pub args: Vec<String>,
+    /// 与 args 相同的命令，按段分组，界面按段换行展示
+    pub segments: Vec<ArgSegment>,
+    /// 两遍编码的第一遍命令（只分析、不输出文件）；其余模式为空
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_pass: Option<Vec<String>>,
     pub estimate: Estimate,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps_insight: Option<FpsInsight>,

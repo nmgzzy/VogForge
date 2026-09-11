@@ -1,7 +1,7 @@
 import { Ban, CircleCheck, CircleHelp, TriangleAlert, Wand2 } from "lucide-react";
 import type { FidelityItem, FidelityState, TranscodePlan } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { FIDELITY_META } from "@/mock/engine";
+import { FIDELITY_HINT } from "@/lib/fidelity";
 import { useProject } from "@/stores/project";
 import { Badge, Button, Checkbox, Section } from "./ui";
 
@@ -43,7 +43,7 @@ function Row({ item, checked }: { item: FidelityItem; checked: boolean }) {
             })
           }
         />
-        <span className={cn("truncate text-[13px]", !checked && "text-muted")} title={FIDELITY_META[item.kind].hint}>
+        <span className={cn("truncate text-[13px]", !checked && "text-muted")} title={FIDELITY_HINT[item.kind]}>
           {item.label}
         </span>
         <span className="ml-auto shrink-0">

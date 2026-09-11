@@ -3,7 +3,7 @@ import { ChevronDown, Clock, Cpu, HardDrive, Lightbulb, TriangleAlert, Zap } fro
 import type { Decision, MediaInfo, PlanResult } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { formatBytes, formatPercent, formatTimeRange } from "@/lib/format";
-import { encoderVendor, isHardware, VENDOR_LABEL } from "@/mock/engine/encoders";
+import { encoderVendor, isHardware, VENDOR_LABEL } from "@/lib/encoders";
 
 export function EstimateCard({ media, result }: { media: MediaInfo; result: PlanResult }) {
   const { estimate: e, plan } = result;

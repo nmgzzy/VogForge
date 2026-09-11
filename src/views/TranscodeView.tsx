@@ -1,9 +1,10 @@
 import { useMemo } from "react";
 import { FileVideo } from "lucide-react";
 import { backend } from "@/backend";
-import { evaluate } from "@/mock/engine";
+import { evaluate } from "@/lib/engine";
 import { useCapabilities } from "@/stores/capability";
 import { useProject, useSelected } from "@/stores/project";
+import { useSettings } from "@/stores/settings";
 import { CommandBar } from "@/components/CommandBar";
 import { ExpertPanel } from "@/components/ExpertPanel";
 import { FidelityPanel } from "@/components/FidelityPanel";
@@ -17,8 +18,13 @@ import { Button, Empty } from "@/components/ui";
 export function TranscodeView() {
   const { media, plan } = useSelected();
   const caps = useCapabilities((s) => s.caps);
+  const settings = useSettings((s) => s.settings);
   const loadSamples = useProject((s) => s.loadSamples);
-  const result = useMemo(() => (media && plan ? evaluate(media, plan, caps) : undefined), [media, plan, caps]);
+  // 输出路径随设置里的输出目录与命名模板变化
+  const result = useMemo(
+    () => (media && plan ? evaluate(media, plan, caps, settings) : undefined),
+    [media, plan, caps, settings],
+  );
 
   return (
     <div className="flex h-full min-w-0 flex-1">
@@ -44,7 +50,7 @@ export function TranscodeView() {
                     <div className="@min-[900px]:hidden">
                       <DecisionList result={result} />
                     </div>
-                    <ExpertPanel plan={plan} />
+                    <ExpertPanel plan={plan} result={result} />
                   </div>
                   <div className="hidden flex-col gap-4 @min-[900px]:sticky @min-[900px]:top-4 @min-[900px]:flex @min-[900px]:self-start">
                     <EstimateCard media={media} result={result} />

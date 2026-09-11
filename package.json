@@ -13,7 +13,8 @@
     "tauri": "tauri",
     "test:rust": "cargo test --workspace",
     "bindings": "cargo test -p vidforge-core export_bindings",
-    "e2e:cdp": "node scripts/tauri-cdp.mjs"
+    "e2e:cdp": "node scripts/tauri-cdp.mjs",
+    "wasm": "cargo build -p vidforge-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pkg target/wasm32-unknown-unknown/release/vidforge_wasm.wasm"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

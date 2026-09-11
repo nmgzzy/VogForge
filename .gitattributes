@@ -1,2 +1,4 @@
 # ffmpeg 真实输出的 fixture 保持原样（Windows 构建输出 CRLF），不做换行转换
 crates/vidforge-core/tests/fixtures/** -text
+# wasm-bindgen 生成的引擎包（pnpm wasm），随仓库提交供前端直接使用
+src/wasm/pkg/** linguist-generated -diff

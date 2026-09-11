@@ -4,7 +4,7 @@
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [TODO](todo.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
-当前进度：阶段 0–4 已完成，达到里程碑 M3（首次真实转码：Rust 生成的命令在真实 ffmpeg 上转码并通过 ffprobe 核对）。逐项状态见 [TODO](todo.md)。
+当前进度：阶段 0–5 已完成，达到里程碑 M4（推荐可用：决策引擎只剩 Rust 一份，编译成 WebAssembly 驱动界面；保真度冲突能解释与一键修正）。逐项状态见 [TODO](todo.md)。
 
 ## 总体策略
 

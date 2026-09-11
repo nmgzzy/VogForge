@@ -513,7 +513,7 @@ ffmpeg -hide_banner -nostdin -loglevel error \
 | `load_plugin` | Skylake 时代 MediaSDK 的遗留选项，Core Ultra 上不要传 |
 | 多 GPU | 核显加独显共存时默认选哪个不确定，需允许用户指定 adapter |
 
-QSV 的 RC 模式选择逻辑 [源码] `qsvenc.c` 的 `select_rc_mode()`：设了 `-q:v` 走 CQP；`look_ahead` 加 `global_quality` 走 LA_ICQ；`bitrate` 加 `global_quality` 走 QVBR；都没设走 CQP 并打印提示。
+QSV 的 RC 模式选择逻辑 [源码] `qsvenc.c` 的 `select_rc_mode()`：设了 `-q:v` 走 CQP；`look_ahead` 加 `global_quality` 走 LA_ICQ；`bitrate` 加 `global_quality` 加 `maxrate` 走 QVBR；都没设走 CQP 并打印提示。几种组合的实测结果见 8.2 节，其中 `global_quality` 加 `maxrate`、不给 `bitrate` 会静默落到 CQP。
 
 ffmpeg 会打印 `Using the %s ratecontrol method`。解析这行可确认实际生效的 RC 模式，建议在 dry-run 时抓取。
 
@@ -606,22 +606,46 @@ progress=continue
 
 ### 8.2 码率控制参数对照
 
-| 目标 | libx265 | libsvtav1 | NVENC | QSV | VideoToolbox |
-|---|---|---|---|---|---|
-| 恒定质量 | `-crf 18` | `-crf 30` | `-rc vbr -b:v 0 -cq 26` | `-global_quality 24` | `-q:v 65`（仅 Apple Silicon） |
-| 恒定 QP | `-x265-params qp=22` | `-qp 30` | `-rc constqp -qp 22` | `-q:v 22` | 无 |
-| VBR | `-b:v 6M` | `-b:v 6M` | `-rc vbr -b:v 6M -maxrate 9M -bufsize 12M` | `-b:v 6M -maxrate 9M` | `-b:v 6M` |
-| 带上限的恒定质量 | `-crf 18 -maxrate 20M -bufsize 40M` | `-crf 30 -maxrate 20M` | `-rc vbr -cq 26 -b:v 0 -maxrate 20M` | `-b:v 6M -global_quality 24`（QVBR） | 无 |
-| CBR | `-b:v 6M` 加 vbv 参数与 `strict-cbr=1` | `-b:v 6M -svtav1-params rc=2` | `-rc cbr -b:v 6M` | `-b:v 6M -maxrate 6M` | `-b:v 6M -constant_bit_rate 1`（macOS 13+） |
-| 两遍 | `-pass 1/2` 加 **`-x265-stats`** | `-pass 1/2` 加 `-passlogfile` | `-multipass qres`（不是 `-pass`） | `-extbrc 1`（近似） | 无 |
-| 速度档 | `-preset ultrafast..placebo` | `-preset 0..13`（数字小=慢） | `-preset p1..p7` | `-preset veryfast..veryslow` | `-realtime 0` |
+VidForge 生成的写法（`pipeline/args.rs` 的 `rate_args`）。码率单位 k；目标码率模式的峰值取 1.5 倍，缓冲一律取 2 倍峰值：
+
+| 模式 | libx264 / libx265 | libsvtav1 | QSV（h264 / hevc） | NVENC | AMF | VideoToolbox |
+|---|---|---|---|---|---|---|
+| 恒定质量 | `-crf Q` | `-crf Q` | `-global_quality Q`（ICQ） | `-rc vbr -b:v 0 -cq Q` | `-rc cqp -qp_i Q -qp_p Q` | `-q:v Q`（仅 Apple Silicon） |
+| 目标码率 | `-b:v T -maxrate 1.5T -bufsize 3T` | `-b:v T`（VBR） | `-b:v T -maxrate 1.5T -bufsize 3T`（VBR） | `-rc vbr -b:v T -maxrate 1.5T -bufsize 3T` | `-rc vbr_peak -b:v T -maxrate 1.5T -bufsize 3T` | `-b:v T` |
+| 限峰值 | `-crf Q -maxrate M -bufsize 2M` | `-crf Q -maxrate M` | `-global_quality Q -b:v 2M/3 -maxrate M -bufsize 2M`（QVBR） | `-rc vbr -b:v 0 -cq Q -maxrate M -bufsize 2M` | 不支持 | 不支持 |
+| 两遍 | `-b:v T -pass 1/2 -passlogfile P` | 同左 | 不支持 | 不支持 | 不支持 | 不支持 |
+
+不支持的组合由引擎换成最接近的模式：限峰值 M 换成目标码率 2M/3（峰值仍是 M）；两遍在自动选编码器时改用软件编码器，手选了硬件编码器时换成单遍目标码率。`av1_qsv` 的限峰值同样按不支持处理。
+
+阶段 5 在开发机上实测（FFmpeg 9.0.1 gyan full，Arc 核显，4 秒 720p 测试图，`transcode_real.rs` 固化了其中可自动核对的部分）：
+
+| 写法 | 结果 |
+|---|---|
+| QSV 只给 `-global_quality` | ICQ（verbose 日志 `Using the intelligent constant quality (ICQ) ratecontrol method`） |
+| QSV `-global_quality` 加 `-maxrate`、不给 `-b:v` | **静默落到 CQP**，峰值限制不生效 |
+| QSV `-global_quality` 加 `-b:v T -maxrate M`（T < M） | QVBR，hevc 8/10bit 与 h264 均可 |
+| QSV `-b:v T -maxrate T` | CBR（目标等于峰值时走 CBR，所以 QVBR 的目标必须小于峰值） |
+| `av1_qsv` 走 QVBR | `Error while opening encoder`，不可用 |
+| libx265 `-crf Q -maxrate M` 不给 `-bufsize` | **峰值限制被静默忽略**（输出 5.4 Mbps，上限 1 Mbps）；加 `-bufsize` 后生效 |
+| libsvtav1 `-b:v 1500k` 单遍 | 4 秒片段实际 2.4 Mbps，短片单遍 VBR 偏差大；两遍 1.57 Mbps |
+| libsvtav1 `-crf Q -maxrate 1000k` | 峰值只是大致遵守（1.5 Mbps） |
+| 两遍：三个软件编码器都用 `-pass N -passlogfile P` | ffmpeg 写 `P-<输出流序号>.log`（x264 另有 `.mbtree`，x265 另有 `.cutree`），1500k 目标实际 1.46–1.57 Mbps |
 
 几个容易错的点：
 
-- **libx265 的两遍统计文件用 `-x265-stats`，不是 `-passlogfile`**（后者是给 libx264 的）。
+- 9.0 的命令行对 libx264 / libx265 / libsvtav1 统一处理 `-passlogfile`，libx265 不必另用 `-x265-stats`（两者都能用）。
+- 第一遍必须看到与第二遍完全相同的帧：同样的滤镜、`-fps_mode:v cfr -r`、尾部补齐；只编码视频，输出 `-f null -`。
 - NVENC 的 `-cq` 必须配 `-rc vbr -b:v 0`，否则会被 bitrate 约束。
 - VideoToolbox 的 `-q:v` 仅 Apple Silicon 可用，Intel Mac 报 `qscale not available for encoder`。
 - **不存在跨编码器的统一质量刻度**。界面上的质量档位必须按编码器分别映射，并标注不等价。
+
+其余写法备查（VidForge 未使用）：
+
+| 目标 | libx265 | libsvtav1 | NVENC | QSV | VideoToolbox |
+|---|---|---|---|---|---|
+| 恒定 QP | `-x265-params qp=22` | `-qp 30` | `-rc constqp -qp 22` | `-q:v 22` | 无 |
+| CBR | `-b:v 6M` 加 vbv 参数与 `strict-cbr=1` | `-b:v 6M -svtav1-params rc=2` | `-rc cbr -b:v 6M` | `-b:v 6M -maxrate 6M` | `-b:v 6M -constant_bit_rate 1`（macOS 13+） |
+| 速度档 | `-preset ultrafast..placebo` | `-preset 0..13`（数字小=慢） | `-preset p1..p7` | `-preset veryfast..veryslow` | `-realtime 0` |
 
 ### 8.3 质量评估（v2）
 
