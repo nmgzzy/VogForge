@@ -1,0 +1,12 @@
+---
+source: crates/vidforge-core/tests/args_facts.rs
+expression: text
+---
+全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
+输入   -hwaccel videotoolbox -hwaccel_output_format videotoolbox_vld -i D:\素材\2026-08 京都\IMG_4521.MOV
+映射   -map 0:0 -map 0:1 -map_metadata 0
+视频   -c:v h264_videotoolbox -q:v 24
+滤镜   -vf scale_vt=w=1920:h=1080:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709
+音频   -c:a:0 copy
+封装   -movflags +faststart -f mp4
+输出   D:\转码输出\IMG_4521_1080p_h264.mp4

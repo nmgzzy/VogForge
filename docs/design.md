@@ -205,25 +205,34 @@ Capabilities
 
 ### 4.3 命令构建（`pipeline/args.rs`）
 
-签名：`fn build(plan: &TranscodePlan, media: &MediaInfo, caps: &Capabilities) -> Result<Vec<String>>`
+签名：`fn build_arg_segments(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities, output: &Path) -> Vec<ArgSegment>`
 
-返回 argv 数组而非字符串，避免引号转义问题。参数顺序固定分段，便于快照测试阅读：
+返回分段的 argv 而非字符串，避免引号转义问题；界面按段换行展示，执行时用 `flatten` 拍平。`output` 是实际写入的临时文件路径，由输出规划（阶段 6）给出。段落顺序固定：
 
 ```
-[全局]   -hide_banner -nostdin -loglevel ... -progress ...
-[硬解]   -hwaccel ... -hwaccel_output_format ...
-[输入]   -i <path>
-[映射]   -map ...
-[视频]   -c:v ... -pix_fmt ... [RC] [preset/profile] [色彩标签] [-x265-params]
-[滤镜]   -vf / -filter_complex
-[音频]   -c:a:N ... -b:a:N ... -ac:a:N ... -metadata:s:a:N ...
-[字幕]   -c:s ...
-[元数据] -map_chapters -map_metadata
-[容器]   -tag:v hvc1 -movflags +faststart / -strict unofficial
-[输出]   <tmp_path>
+[全局]   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
+[输入]   -hwaccel auto [-init_hw_device opencl=ocl -filter_hw_device ocl] -i <path>
+[映射]   -map 0:v:0 -map 0:<音轨>… [-map 0:s? | 文本字幕] [-map 0:t?] [-map_chapters 0] -map_metadata 0
+[视频]   -c:v … -pix_fmt … [RC] [preset/profile] [-x265-params] [-g] [-dolbyvision 0|1] [附加参数]
+[滤镜]   -vf <缩放 / 色调映射 / tpad>
+[帧率]   -fps_mode:v cfr -r <目标>
+[音频]   -c:a:N … -b:a:N … -filter:a:N <pan 降混 / aresample> -ac:a:N … -metadata:s:a:N title=…
+[字幕]   -c:s copy | mov_text
+[封装]   [-tag:v hvc1] [-strict unofficial] [-movflags +faststart] -f <muxer>
+[输出]   <临时文件>
 ```
 
-构建过程中的每个非平凡决定都往 `decision_notes` 追加一条 `Decision`，界面直接展示。
+阶段 4 用真实转码确定的几条规则：
+
+- 硬解一律 `-hwaccel auto`，不按编码器写 `-hwaccel qsv`（9.0 会把帧留在 GPU 上导致失败，技术事实文档 7.5 节）。保留杜比视界或 HDR10+ 时不硬解。
+- 不写 `-color_primaries` / `-color_trc`（9.0 不生效，12 节）：保留 HDR 靠解码帧自带的标签，转 SDR 靠色调映射滤镜打 BT.709 标签。
+- 转固定帧率时，视频比音频短半帧以上就在滤镜链末尾加 `tpad` 补齐（4.3 节）。
+- `-y` 是因为输出是应用自己管理的临时文件；与目标文件的冲突在改名那一步按设置处理。
+- MKV 保留字幕时带上附件（`-map 0:t?`），ASS 字幕要用里面的字体。
+- 视频按分析得到的流序号映射（`-map 0:<index>`），不用 `0:v:0`：小写 `v` 会把封面图也算进去。
+- 缩放按显示方向计算：重编码时 ffmpeg 先按 Display Matrix 自动旋转，竖拍素材编码尺寸 1920×1080、旋转 90° 时目标 720p 应是 720×1280（实测输出 720×1280、不再带旋转）。
+
+**与前端 mock 引擎的对照。** 阶段 5 之前前端仍用 TS 引擎做推荐。两边对同一批输入必须产出完全相同的命令：`src/mock/engine/golden.test.ts` 把 6 个示例素材 × 8 个场景 × 两套环境、全部一键修正、全部编码器的 8/10bit、四条色调映射管线、字幕与容器组合等约 200 个样本写进 `tests/fixtures/golden/engine.json`，Rust 的 `golden_engine.rs` 逐条对照。改规则时两边一起改，用 `UPDATE_GOLDEN=1` 重写样本。
 
 ### 4.4 保真度约束求解（`pipeline/fidelity.rs`）
 
@@ -471,6 +480,8 @@ macOS 的 Homebrew 构建三条管线全缺，这是跨平台最大的坑，必�
 
 多声道降混到 2.0 时使用显式 `pan` 矩阵（中置 +3dB 增强对白）加 `alimiter` 防削波，而非简单 `-ac 2`。需要响度标准化时使用两遍 `loudnorm`，单遍会有起始段 ramp-up 问题。
 
+容器装不下的音轨不原样复制（TrueHD / DTS 进 MP4 或 MOV 必然失败）：MOV 多用于剪辑，转 24bit PCM；MP4 多声道转 E-AC-3 640k、立体声转 AAC 256k。保真度面板照常把"无损音轨"判为未保留并给出切换 MKV 的修正。
+
 ## 6. 前端设计
 
 ### 6.1 界面结构
@@ -557,11 +568,13 @@ Zustand store，职责不重叠：
 | 层 | 范围 | 工具 |
 |---|---|---|
 | 单元 | probe JSON 解析、progress 块协议解析、容器矩阵、保真度求解、策略规则、预估边界 | `cargo test` |
-| 快照 | 命令构建：覆盖 20+ 场景 × 编码器 × 容器 × 保真度组合 | `insta` |
-| 集成 | 用合成素材跑完整管线并用 ffprobe 校验输出 | `cargo test --test integration` |
+| 对照 | Rust 与前端 TS 引擎对约 200 个黄金样本产出完全相同的命令 | `golden_engine.rs` + `golden.test.ts` |
+| 事实断言 | 每条技术事实在全部黄金样本上成立（无 `-vsync`、MP4 HEVC 带 hvc1……） | `args_facts.rs` |
+| 快照 | 15 个关键组合的完整命令，改动时一眼看出差异 | `insta` |
+| 集成 | 合成素材 → 分析 → 生成命令 → 真实 ffmpeg 转码 → ffprobe 核对输出 | `media_real.rs`、`transcode_real.rs` |
 | 前端 | store 逻辑、保真度状态渲染、参数映射 | Vitest |
 | 手动 | 见需求文档第 6 节验收标准 | 清单核对 |
 
-**合成测试素材**是集成测试能跑起来的关键。用 ffmpeg 自己生成带 BT.2020/PQ 加 MDCV/MaxCLL 的 HDR10 片段、多音轨片段、VFR 片段，这样测试不依赖用户手里的蓝光原盘，CI 里也能跑。生成脚本放 `tests/fixtures/`。
+**合成测试素材**是集成测试能跑起来的关键。用 ffmpeg 自己生成带 BT.2020/PQ 加 MDCV/MaxCLL 的 HDR10 片段、多音轨片段、VFR 片段，这样测试不依赖用户手里的蓝光原盘，CI 里也能跑。生成命令直接写在集成测试里（`media_real.rs`、`transcode_real.rs`），不另设脚本，保证素材与断言同源。
 
 集成测试对环境能力敏感的部分（例如 QSV 编码）必须先查 `Capabilities` 再决定跳过还是执行，不能假定 CI 机器有 GPU。

@@ -244,6 +244,8 @@ ffprobe -v error -select_streams v:0 -read_intervals "%+#120" -show_packets \
 
 **实现要求**：统一使用 `-fps_mode:v cfr -r <target>`。显式写出 `-fps_mode` 比只写 `-r` 更自解释，且意图明确。
 
+**CFR 只能填满到最后一帧结束 [实测]**（阶段 4）。上表的源最后一帧带着自己的时长，所以转换后恰好补到 10.000。若源的视频流本身就比音频短（合成素材实测：视频 5.933 秒、音频 6.000 秒），`-fps_mode:v cfr -r 30` 的输出照样是 5.933 秒，差 2 帧，剪辑时就是音画不齐。解决办法是在滤镜链末尾加 `tpad=stop_mode=clone:stop_duration=<差值>`，把最后一帧延长到音频结束，实测输出音视频时长差小于 1 帧。两条流的时长分别取自 `duration` 字段（MP4）或 `DURATION` 标签（MKV）。
+
 验证输出确实是 CFR：
 
 ```bash
@@ -536,6 +538,10 @@ ffmpeg 会打印 `Using the %s ratecontrol method`。解析这行可确认实际
 
 **[实测]** 本机列出的 hwaccel：`cuda vaapi dxva2 qsv d3d11va opencl vulkan d3d12va amf`。列出不等于可用，仍需第 2、3 层探测。
 
+**`-hwaccel qsv` 在 9.0 会把帧留在 GPU 上 [实测]**（阶段 4 真实转码时发现）。只写 `-hwaccel qsv` 不写输出格式时，ffmpeg 打印 `WARNING: defaulting hwaccel_output_format to qsv for compatibility with old commandlines`，帧以 QSV 表面形式留在显存；后面再要求 `-pix_fmt p010le` 就报 `Impossible to convert between the formats supported by the filter` 并失败。上面"硬解 + 软编"那条写法对 qsv 不成立。
+
+**实现要求**：硬解一律写 `-hwaccel auto`。实测 `-hwaccel auto` 解码后帧自动下载到内存，接软件滤镜、libx265、hevc_qsv 都正常，而且 HDR10 的帧级 MDCV / CLL side data 仍在（libx265 自动透传后输出的 1000 nits 元数据完整）。要做零拷贝的全硬件流水，必须同时写 `-hwaccel_output_format` 并改用 `scale_qsv` / `vpp_qsv` 这类硬件滤镜，v1 不做。
+
 ### 7.6 探测实现中踩到的坑
 
 以下均为 **[实测]**（阶段 2 实现能力探测时在开发机上验证）。
@@ -645,6 +651,8 @@ ffmpeg -i distorted.mkv -i reference.mkv \
 | 附件（字体等） | 可以 | 不行 |
 
 MP4 输出的固定附加参数：`-tag:v hvc1`（HEVC）、`-movflags +faststart`（便于流式播放与拖动）。
+
+MOV 与 MP4 同属一族，音频白名单不同：AAC / AC-3 / E-AC-3 / ALAC / PCM 可以，TrueHD 与 DTS 同样不行。剪辑预处理场景输出 MOV，蓝光片源的 TrueHD / DTS 要转成 24bit PCM 而不是原样复制，否则命令必然失败（阶段 4 事实断言发现的真实缺陷）。
 
 ## 10. ffmpeg 构建能力差异
 

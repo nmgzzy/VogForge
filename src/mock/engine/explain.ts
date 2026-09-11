@@ -10,7 +10,7 @@ import {
   VENDOR_LABEL,
 } from "./encoders";
 import { isExtremeVfr } from "./fps";
-import { targetDimensions } from "./args";
+import { displaySize, targetDimensions } from "./args";
 import { preferHwFor, scenarioCodec } from "./recommend";
 import { pickTonemap } from "./color";
 
@@ -174,10 +174,11 @@ export function explain(
 
   // ── 分辨率 ──
   const dims = targetDimensions(v, vp.resolution);
+  const shown = displaySize(v);
   if (dims) {
-    add("分辨率", `${dims.w}×${dims.h}`, `从 ${v.width}×${v.height} 缩小，使用 lanczos 保留细节`);
+    add("分辨率", `${dims.w}×${dims.h}`, `从 ${shown.w}×${shown.h} 缩小，使用 lanczos 保留细节`);
   } else if (vp.resolution !== "source") {
-    add("分辨率", "保持原始", `目标分辨率不低于源（${v.width}×${v.height}），不做放大`, "tip");
+    add("分辨率", "保持原始", `目标分辨率不低于源（${shown.w}×${shown.h}），不做放大`, "tip");
   }
 
   // ── 帧率 ──

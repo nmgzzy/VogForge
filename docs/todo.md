@@ -139,56 +139,41 @@
 
 ## 阶段 4：命令构建与容器矩阵
 
-- [ ] `model.rs`：`TranscodePlan` / `VideoPlan` / `AudioTrackPlan` / `FpsPolicy` / `Decision` 等，全部 ts-rs 导出
-- [ ] `args.rs`：按固定分段顺序生成 argv
-  - [ ] 全局参数：`-hide_banner -nostdin -loglevel warning -progress pipe:1 -nostats`
-  - [ ] 硬件解码参数
-  - [ ] 流映射
-  - [ ] 视频编码参数，按编码器分派 RC 参数名
-  - [ ] 色彩标签
-  - [ ] 滤镜链组装（缩放、色调映射）
-  - [ ] 音频逐轨参数
-  - [ ] 字幕、章节、元数据
-  - [ ] 容器附加参数
-  - [ ] 输出到临时文件名 `.vidforge-part`
-- [ ] `fps.rs`
-  - [ ] `KeepSource` / `ConstantRate` / `CapAt` 三种策略
-  - [ ] 目标帧率推荐：名义帧率吸附标准档，异常值回退到平均帧率
-  - [ ] 生成 `-fps_mode:v cfr -r <target>`
-  - [ ] 按需追加 `-af aresample=async=1`
-  - [ ] 预估复制/丢弃帧数
-- [ ] `color.rs`：色调映射管线选择与滤镜字符串生成（libplacebo / tonemap_opencl / zscale / scale_vt）
-- [ ] 色彩标签不依赖 `-color_primaries` / `-color_trc` 输出选项（9.0 不生效，见技术事实 12 节），需要时用 `setparams`
-- [ ] `audio.rs`：copy / 编码 / 双轨策略 / `pan` 降混 / loudnorm 两遍
-- [ ] `container.rs`：编码 × 容器兼容矩阵
-- [ ] 快照测试（`insta`），至少覆盖：
-  - [ ] 手机 HDR → 归档（libx265 10bit，HDR10 自动透传，不手传 master-display）
-  - [ ] 手机 HDR → 流媒体（色调映射 SDR，MP4 + hvc1 + faststart）
-  - [ ] 手机 HDR → 流媒体（QSV 硬编保留 HDR10）
-  - [ ] iPhone DV 8.4 → 归档保留 DV（`-dolbyvision 1` + yuv420p10le）
-  - [ ] iPhone DV 8.4 → 不保留 DV（显式 `-dolbyvision 0`）
-  - [ ] 蓝光 remux → 高画质收藏（全音轨 copy，PGS copy，MKV）
-  - [ ] 蓝光 remux → 双轨策略（TrueHD copy + E-AC-3 + AAC）
-  - [ ] VFR 手机素材 → 剪辑预处理（CFR）
-  - [ ] VFR 手机素材 → 归档（保持 VFR，无帧率参数）
-  - [ ] 普通 H.264 → 最小体积（AV1 via libsvtav1）
-  - [ ] 原样封装
-  - [ ] 各编码器的恒定质量 RC 参数名（x265 / svtav1 / nvenc / qsv / videotoolbox）
-  - [ ] 5.1 降混 2.0 的 pan 矩阵
-- [ ] 断言型测试（每条技术事实一个）
-  - [ ] 任何输出都不含 `-vsync`
-  - [ ] CFR 用 `-fps_mode:v cfr`，不用 `fps` 滤镜
-  - [ ] MP4 输出 HEVC 必含 `-tag:v hvc1`
-  - [ ] MP4 输出 DV 必含 `-strict unofficial`
-  - [ ] 不保留 DV 且源含 DV 时必含 `-dolbyvision 0`
-  - [ ] QSV 10bit 必为 `p010le` + `main10`
-  - [ ] QSV 必显式指定 RC 模式
-  - [ ] 默认不含 `-low_power`
-  - [ ] libx265 两遍用 `-x265-stats` 而非 `-passlogfile`
-  - [ ] AV1 + HDR 不使用 libaom
-  - [ ] `pan` 降混后不再出现 `-ac 2`
-  - [ ] TrueHD / PGS 在 MP4 下判为不兼容
-- [ ] 集成测试：抽样命令在真实 ffmpeg 上用合成素材跑通
+状态：已完成，达到里程碑 M3（Rust 生成的命令在真实 ffmpeg 上转码并通过 ffprobe 核对）。前端推荐仍走 TS 引擎，两边由黄金样本对照；阶段 5 切到 Rust。
+
+- [x] `model/plan.rs`：`TranscodePlan` / `VideoPlan` / `AudioTrackPlan` / `FpsPolicy` / `Decision` / `PlanResult` 等，全部 ts-rs 导出，前端类型改为 re-export
+- [x] `pipeline/args.rs`：按固定分段顺序生成 argv
+  - [x] 全局参数：`-hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats`
+  - [x] 硬件解码参数：一律 `-hwaccel auto`（实测 `-hwaccel qsv` 会把帧留在 GPU 上导致失败）
+  - [x] 流映射（含 MKV 附件 `-map 0:t?`）
+  - [x] 视频编码参数，按编码器分派 RC 参数名（AMF / VideoToolbox 10bit 显式给 p010le）
+  - [x] 色彩标签：不依赖 `-color_primaries` / `-color_trc`（9.0 不生效），保留靠帧、转 SDR 靠滤镜
+  - [x] 滤镜链组装（缩放、四条色调映射管线、CFR 尾部 tpad 补齐）
+  - [x] 音频逐轨参数、`pan` 降混、`aresample=async=1`
+  - [x] 字幕、章节、元数据
+  - [x] 容器附加参数
+  - [x] 输出路径由调用方给（写临时文件与改名在阶段 6 的输出规划里做）
+- [x] `pipeline/fps.rs`：标准档吸附、`fps_arg`、CFR 目标推荐、极端 VFR 判定、复制/丢弃帧数
+- [x] `pipeline/encoders.rs`：质量档位映射、preset、10bit 与 HDR10 支持、自动选编码器
+- [x] `pipeline/container.rs`：编码 × 容器兼容矩阵（MKV 全收；MP4 / MOV 白名单）
+- [x] 容器装不下的音轨改为重编码（MOV → 24bit PCM，MP4 → E-AC-3 / AAC），不再生成跑不起来的命令
+- [x] 视频按真实流序号映射（封面图可能排在前面）；带旋转的竖拍素材按显示方向缩放
+- [ ] loudnorm 两遍（需要执行器支持两遍，移到阶段 6）
+- [x] 黄金样本对照：`golden.test.ts` 生成约 200 个样本，`golden_engine.rs` 逐条对照（变异检验确认有效）
+- [x] 快照测试（`insta`，15 个关键组合）：DV 8.4 归档 / 流媒体 QSV CFR / 手机 SDR / 修正后保留 DV、蓝光收藏 / 流媒体兼容轨 / remux、录屏剪辑 CFR、无人机 AV1、相机社交降混、macOS VideoToolbox、OpenCL 720p、scale_vt 硬编、NVENC 与 AMF 10bit
+- [x] 断言型测试（`args_facts.rs`，每条技术事实在全部样本上成立）
+  - [x] 任何输出都不含 `-vsync`
+  - [x] CFR 用 `-fps_mode:v cfr`，不用 `fps` 滤镜
+  - [x] MP4 / MOV 输出 HEVC 必含 `-tag:v hvc1`
+  - [x] MP4 输出 DV 必含 `-strict unofficial`
+  - [x] 源含 DV 且用 libx265 / libsvtav1 时显式 `-dolbyvision 0|1`
+  - [x] QSV 10bit 必为 `p010le`（HEVC 加 `main10`），并显式 `-global_quality`
+  - [x] NVENC 的 `-cq` 配 `-rc vbr -b:v 0`
+  - [x] 默认不含 `-low_power`
+  - [x] 不用 libaom、不用色彩输出选项、带 `-y` 与 `-f`
+  - [x] `pan` 降混后不再出现 `-ac`
+  - [x] 推荐出的计划不会把 TrueHD / DTS / 图形字幕原样放进 MP4 / MOV
+- [x] 集成测试 `transcode_real.rs`（真实 ffmpeg，9 项）：x265 / SVT-AV1 自动透传 HDR10、三条色调映射输出 BT.709、QSV 保留 HDR10 + hvc1、VFR 转 CFR 帧间隔恒定且音画差小于 1 帧、remux 全轨道章节附件保留、pan 降混、硬解后 HDR10 side data 仍在、竖拍素材缩放为 720×1280、带封面图的文件编码正片
 
 ## 阶段 5：策略引擎与保真度求解
 
@@ -204,6 +189,7 @@
   - [ ] 极端 VFR 转 CFR 的体积警告
 - [ ] 每条决策产出中文理由 `Decision`
 - [ ] 质量档位按编码器分别映射
+- [ ] 码率控制模式（需求 F-3.3）：恒定质量 / 目标码率 / 带上限的恒定质量 / 两遍（两遍的执行在阶段 6）
 - [ ] `fidelity.rs`：九类勾选项的判定与一键修正
 - [ ] `estimate.rs`：体积与耗时范围预估（CFR 重复帧的体积按非线性修正）
 - [ ] 界面接真实推荐与求解结果

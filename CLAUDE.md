@@ -6,7 +6,9 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 
 ## 当前阶段
 
-阶段 0–3 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入都已接通。转码页的推荐、保真度求解和命令生成仍由前端 mock 引擎 `src/mock/engine/` 驱动，吃的是真实的能力与媒体数据，阶段 4–5 迁到 Rust。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
+阶段 0–4 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 命令构建（`crates/vidforge-core/src/pipeline/`）都已接通。转码页的推荐与保真度求解仍由前端 TS 引擎 `src/mock/engine/` 驱动，阶段 5 迁到 Rust。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
+
+**两套引擎必须一致。** 在前端切到 Rust 之前，命令规则同时存在于 `src/mock/engine/args.ts` 与 `crates/vidforge-core/src/pipeline/args.rs`。改规则时两边一起改，然后 `UPDATE_GOLDEN=1 pnpm vitest run src/mock/engine/golden.test.ts` 重写 `tests/fixtures/golden/engine.json`，再跑 `cargo test -p vidforge-core --test golden_engine` 确认 Rust 逐条一致。insta 快照变化时用 `INSTA_UPDATE=always cargo test -p vidforge-core --test args_facts` 重写，再审阅 diff。
 
 ## 常用命令
 

@@ -1,5 +1,5 @@
-import type { AudioStream, Capabilities, MediaInfo, TranscodePlan, VideoStream } from "@/lib/types";
-import { encoderVendor, isHardware } from "./encoders";
+import type { ArgSegment, AudioStream, Capabilities, MediaInfo, TranscodePlan, VideoStream } from "@/lib/types";
+import { isHardware } from "./encoders";
 import { fpsArg } from "./fps";
 import { splitArgs } from "@/lib/format";
 
@@ -7,26 +7,32 @@ import { splitArgs } from "@/lib/format";
  * 命令构建。每条规则都对应 docs/ffmpeg-facts.md 里的一条已核实事实，
  * 修改时请同步更新文档与测试。
  *
- * 返回分段结构，便于命令预览按段换行；复制时再拍平。
+ * 返回分段结构，便于命令预览按段换行；复制时再拍平。与 vidforge-core 的 pipeline/args.rs 逐条对应，
+ * 两边由 golden.test.ts 与 golden_engine.rs 对照同一份黄金样本。
  */
-export interface ArgSegment {
-  label: string;
-  args: string[];
-}
+export type { ArgSegment };
 
 export const OUTPUT_DIR = "D:\\转码输出";
 
+/** 显示尺寸：带 90° / 270° 旋转的手机竖拍素材，编码尺寸是横的、显示是竖的 */
+export function displaySize(v: VideoStream): { w: number; h: number } {
+  return ((v.rotation % 180) + 180) % 180 === 90 ? { w: v.height, h: v.width } : { w: v.width, h: v.height };
+}
+
+/**
+ * 目标尺寸（显示方向）。重编码时 ffmpeg 先按 Display Matrix 自动旋转再进滤镜，所以缩放要按显示方向算
+ * （与 Rust 的 target_dimensions 一致）
+ */
 export function targetDimensions(v: VideoStream, preset: TranscodePlan["video"]["resolution"]) {
   if (preset === "source") return null;
   const target = Number(preset);
-  const short = Math.min(v.width, v.height);
-  if (target >= short) return null; // 绝不放大
-  const portrait = v.height > v.width;
+  const { w, h } = displaySize(v);
+  const short = Math.min(w, h);
+  if (short === 0 || target >= short) return null; // 绝不放大
+  const portrait = h > w;
   const scale = target / short;
   const even = (n: number) => Math.round(n / 2) * 2;
-  return portrait
-    ? { w: target, h: even(v.height * scale), portrait }
-    : { w: even(v.width * scale), h: target, portrait };
+  return portrait ? { w: target, h: even(h * scale), portrait } : { w: even(w * scale), h: target, portrait };
 }
 
 export function outputPath(media: MediaInfo, plan: TranscodePlan): string {
@@ -55,24 +61,33 @@ export function downmixFilter(src: AudioStream): string {
   return `pan=stereo|${expr},alimiter=limit=0.97:level=false`;
 }
 
+/**
+ * 硬件解码一律用 `-hwaccel auto`：解码后的帧自动下载到内存，软件滤镜与各家编码器都能接。
+ * 不能按编码器写 `-hwaccel qsv`：9.0 起它默认把帧留在 GPU 上，后面再要求 `-pix_fmt p010le` 会转换失败
+ * （技术事实文档 7.5 节，阶段 4 实测）
+ */
 function hwaccelFor(plan: TranscodePlan, media: MediaInfo): string[] {
   const vp = plan.video;
   if (vp.action === "copy") return [];
   // 硬解后的 hwdownload 可能丢失 DV RPU 与 HDR10+ 等 side data，保留这些时走全软件路径
   if (vp.dovi === "preserve" || media.video[0]?.hdr10plus) return [];
-  if (!isHardware(vp.encoder)) return ["-hwaccel", "auto"];
-  switch (encoderVendor(vp.encoder)) {
-    case "intel":
-      return ["-hwaccel", "qsv"];
-    case "nvidia":
-      return ["-hwaccel", "cuda"];
-    case "amd":
-      return ["-hwaccel", "d3d11va"];
-    case "apple":
-      return ["-hwaccel", "videotoolbox"];
-    default:
-      return [];
-  }
+  return ["-hwaccel", "auto"];
+}
+
+/**
+ * 转固定帧率时补齐视频尾部：源里视频比音频短半帧以上时，把最后一帧延长到音频结束。
+ * CFR 只能填满到最后一帧结束，源本身的长度差会原样带进输出，剪辑时就是音画不齐（与 Rust 的 tail_pad 一致）
+ */
+export function tailPad(media: MediaInfo, plan: TranscodePlan): string | undefined {
+  if (plan.video.fps.kind !== "cfr") return undefined;
+  const fps = plan.video.fps.fps;
+  const video = media.video[0]?.durationSec;
+  const audio = plan.audio
+    .map((t) => media.audio.find((a) => a.index === t.sourceIndex)?.durationSec)
+    .filter((d): d is number => d !== undefined);
+  if (video === undefined || audio.length === 0) return undefined;
+  const diff = Math.max(...audio) - video;
+  return fps > 0 && diff > 0.5 / fps ? `tpad=stop_mode=clone:stop_duration=${diff.toFixed(3)}` : undefined;
 }
 
 /**
@@ -185,11 +200,13 @@ function encoderArgs(plan: TranscodePlan, v: VideoStream): string[] {
     case "hevc_amf":
     case "h264_amf":
     case "av1_amf":
+      // 显式给像素格式：不支持的格式会被静默换掉（技术事实文档 7.6）
+      out.push("-pix_fmt", ten ? "p010le" : "nv12");
       out.push("-quality", vp.preset, "-rc", "cqp", "-qp_i", q, "-qp_p", q);
       break;
     case "hevc_videotoolbox":
     case "h264_videotoolbox":
-      if (ten && vp.encoder === "hevc_videotoolbox") out.push("-profile:v", "main10");
+      if (ten && vp.encoder === "hevc_videotoolbox") out.push("-pix_fmt", "p010le", "-profile:v", "main10");
       out.push("-q:v", q);
       break;
   }
@@ -201,16 +218,8 @@ function encoderArgs(plan: TranscodePlan, v: VideoStream): string[] {
     out.push("-dolbyvision", vp.dovi === "preserve" ? "1" : "0");
   }
 
-  if (vp.hdrAction === "tonemap") {
-    out.push("-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709");
-  } else if (v.color.hdrKind !== "none") {
-    out.push(
-      "-color_primaries", "bt2020",
-      "-color_trc", v.color.hdrKind === "hlg" ? "arib-std-b67" : "smpte2084",
-      "-colorspace", "bt2020nc",
-      "-color_range", "tv",
-    );
-  }
+  // 不写 -color_primaries / -color_trc：9.0 起这两个输出选项不生效，编码器取帧上的色彩属性
+  // （技术事实文档 12 节）。保留 HDR 时解码出的帧自带标签；转 SDR 时由色调映射滤镜给帧打 BT.709 标签
   // 支持引号：-metadata title="My Video" 应是两个 argv，而不是按空白拆成三段
   if (vp.extraArgs) out.push(...splitArgs(vp.extraArgs));
   return out;
@@ -221,16 +230,22 @@ export function buildArgSegments(media: MediaInfo, plan: TranscodePlan, _caps: C
   const vp = plan.video;
   const segs: ArgSegment[] = [];
   const filters: ReturnType<typeof videoFilters> = v && vp.action === "encode" ? videoFilters(plan, v) : { pre: [] };
+  // scale_vt 接硬件编码器时帧一直留在 GPU 上，tpad 处理不了，不补
+  const pad = tailPad(media, plan);
+  if (pad && !(filters.hwaccel && isHardware(vp.encoder))) filters.vf = filters.vf ? `${filters.vf},${pad}` : pad;
 
   segs.push({
     label: "全局",
-    args: ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning", "-progress", "pipe:1", "-nostats"],
+    // -y：输出是应用自己管理的 .vidforge-part 临时文件，上次中断留下的同名文件直接覆盖；
+    // 与目标文件的同名冲突在改名那一步按设置处理
+    args: ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-loglevel", "warning", "-progress", "pipe:1", "-nostats"],
   });
   const input = [...(filters.hwaccel ?? hwaccelFor(plan, media)), ...filters.pre, "-i", media.path];
   segs.push({ label: "输入", args: input });
 
   // 映射
-  const map: string[] = ["-map", "0:v:0"];
+  // 按分析得到的流序号映射：`0:v:0` 会把排在前面的封面图也算进去
+  const map: string[] = ["-map", `0:${v?.index ?? 0}`];
   for (const t of plan.audio) map.push("-map", `0:${t.sourceIndex}`);
   if (plan.subtitles === "all" && media.subtitle.length > 0) {
     if (plan.container === "mkv") map.push("-map", "0:s?");
@@ -238,6 +253,8 @@ export function buildArgSegments(media: MediaInfo, plan: TranscodePlan, _caps: C
   } else if (plan.subtitles === "text_only") {
     for (const s of media.subtitle.filter((x) => !x.imageBased)) map.push("-map", `0:${s.index}`);
   }
+  // MKV 附件多是 ASS 字幕要用的字体，保留字幕时一起带上（MP4 装不下附件）
+  if (plan.container === "mkv" && plan.subtitles !== "none" && media.attachments > 0) map.push("-map", "0:t?");
   if (media.chapters > 0) map.push("-map_chapters", "0");
   map.push("-map_metadata", "0");
   segs.push({ label: "映射", args: map });

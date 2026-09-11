@@ -309,9 +309,15 @@ fn audio_stream(s: &Value) -> AudioStream {
         lossless,
         atmos: prof.contains("Atmos"),
         dts_x: prof.contains("DTS:X"),
+        duration_sec: stream_duration(s),
         profile,
         codec,
     }
+}
+
+/// 单条流的时长：MP4 在 `duration` 字段，MKV 在 `DURATION` 标签
+fn stream_duration(s: &Value) -> Option<f64> {
+    num(&s["duration"]).or_else(|| tag(s, "DURATION").and_then(|d| parse_hms(&d))).filter(|d| *d > 0.0)
 }
 
 fn subtitle_stream(s: &Value) -> SubtitleStream {
@@ -395,6 +401,7 @@ fn video_stream(s: &Value, first_frame: &Value, packets: &[f64], is_first: bool)
             .or_else(|| tag(s, "NUMBER_OF_FRAMES").and_then(|n| rational(&n)))
             .filter(|n| *n > 0.0)
             .map(|n| n as u64),
+        duration_sec: stream_duration(s),
     }
 }
 
@@ -546,10 +553,7 @@ pub fn parse_media(path: &str, size: Option<u64>, outs: &ProbeOutputs) -> Result
         });
     }
 
-    let stream_duration = streams
-        .iter()
-        .filter_map(|s| num(&s["duration"]).or_else(|| tag(s, "DURATION").and_then(|d| parse_hms(&d))))
-        .fold(0.0_f64, f64::max);
+    let stream_duration = streams.iter().filter_map(stream_duration).fold(0.0_f64, f64::max);
     let duration_sec = num(&fmt["duration"]).filter(|d| *d > 0.0).unwrap_or(stream_duration);
     let size_bytes = num(&fmt["size"]).map(|s| s as u64).or(size).unwrap_or(0);
     let bitrate = num(&fmt["bit_rate"])

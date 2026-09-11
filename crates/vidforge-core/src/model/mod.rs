@@ -6,7 +6,9 @@
 mod caps;
 mod encoder;
 mod media;
+mod plan;
 
 pub use caps::*;
 pub use encoder::*;
 pub use media::*;
+pub use plan::*;

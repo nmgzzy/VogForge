@@ -1,0 +1,12 @@
+---
+source: crates/vidforge-core/tests/args_facts.rs
+expression: text
+---
+全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
+输入   -hwaccel auto -i \\NAS\Movies\The.Long.Night.2025.2160p.UHD.BluRay.REMUX.DV.HDR.TrueHD.Atmos.7.1.mkv
+映射   -map 0:0 -map 0:1 -map 0:2 -map 0:3 -map 0:4 -map 0:1 -map 0:8 -map_chapters 0 -map_metadata 0
+视频   -c:v hevc_qsv -pix_fmt p010le -profile:v main10 -preset medium -global_quality 24
+音频   -c:a:0 eac3 -b:a:0 640k -ac:a:0 6 -metadata:s:a:0 title=DD+ 5.1（由 Atmos 转换，不含全景声） -c:a:1 copy -metadata:s:a:1 title=AC-3 5.1 -c:a:2 copy -metadata:s:a:2 title=国语 DD+ 5.1 -c:a:3 copy -metadata:s:a:3 title=导演评论音轨 -c:a:4 aac -b:a:4 256k -filter:a:4 pan=stereo|FL=0.707*FC+1.0*FL+0.6*BL+0.6*SL|FR=0.707*FC+1.0*FR+0.6*BR+0.6*SR,alimiter=limit=0.97:level=false -metadata:s:a:4 title=AAC 立体声（降混）
+字幕   -c:s mov_text
+封装   -tag:v hvc1 -movflags +faststart -f mp4
+输出   D:\转码输出\The.Long.Night.2025.2160p.UHD.BluRay.REMUX.DV.HDR.TrueHD.Atmos.7.1_2160p_hevc.mp4

@@ -1,0 +1,12 @@
+---
+source: crates/vidforge-core/tests/args_facts.rs
+expression: text
+---
+全局   ffmpeg -hide_banner -nostdin -y -loglevel warning -progress pipe:1 -nostats
+输入   -i \\NAS\Movies\The.Long.Night.2025.2160p.UHD.BluRay.REMUX.DV.HDR.TrueHD.Atmos.7.1.mkv
+映射   -map 0:0 -map 0:1 -map 0:2 -map 0:3 -map 0:4 -map 0:s? -map_chapters 0 -map_metadata 0
+视频   -c:v copy
+音频   -c:a:0 copy -metadata:s:a:0 title=TrueHD 7.1 Atmos -c:a:1 copy -metadata:s:a:1 title=AC-3 5.1 -c:a:2 copy -metadata:s:a:2 title=国语 DD+ 5.1 -c:a:3 copy -metadata:s:a:3 title=导演评论音轨
+字幕   -c:s copy
+封装   -f matroska
+输出   D:\转码输出\The.Long.Night.2025.2160p.UHD.BluRay.REMUX.DV.HDR.TrueHD.Atmos.7.1_remux.mkv

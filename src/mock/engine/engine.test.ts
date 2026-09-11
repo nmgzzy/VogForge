@@ -3,7 +3,7 @@ import type { Capabilities, MediaInfo, Scenario } from "@/lib/types";
 import { MOCK_CAPABILITIES as caps } from "../capabilities";
 import { MOCK_MEDIA } from "../media";
 import { applyFix, evaluate, recommendPlan, SCENARIOS, updatePlan } from "./index";
-import { downmixFilter, targetDimensions } from "./args";
+import { buildArgSegments, downmixFilter, flattenArgs, tailPad, targetDimensions } from "./args";
 import { recommendCfrTarget, snapFps, fpsArg } from "./fps";
 import { pickEncoder } from "./encoders";
 import { quoteArg } from "@/lib/format";
@@ -21,6 +21,7 @@ const camera = byId("m-camera");
 const streamingSrc = byId("m-stream");
 
 const run = (m: MediaInfo, s: Scenario) => evaluate(m, recommendPlan(m, s, caps), caps);
+const buildArgs = (m: MediaInfo, p: ReturnType<typeof recommendPlan>) => flattenArgs(buildArgSegments(m, p, caps));
 const has = (args: string[], ...seq: string[]) =>
   args.some((_, i) => seq.every((x, j) => args[i + j] === x));
 
@@ -99,7 +100,8 @@ describe("iPhone 杜比视界 8.4 素材", () => {
     expect(r.plan.container).toBe("mkv");
     expect(has(r.args, "-dolbyvision", "1")).toBe(true);
     expect(has(r.args, "-pix_fmt", "yuv420p10le")).toBe(true);
-    expect(has(r.args, "-color_trc", "arib-std-b67")).toBe(true);
+    // 色彩标签随解码帧沿用，不写（9.0 起也不生效的）-color_trc
+    expect(r.args).not.toContain("-color_trc");
   });
 
   it("归档：杜比视界与 HDR 均判定为可保留", () => {
@@ -139,7 +141,9 @@ describe("iPhone 杜比视界 8.4 素材", () => {
     const vf = r.args[r.args.indexOf("-vf") + 1] ?? "";
     expect(vf).toContain("libplacebo");
     expect(vf).toContain("apply_dolbyvision=1");
-    expect(has(r.args, "-color_trc", "bt709")).toBe(true);
+    // BT.709 标签由 libplacebo 打在帧上，不靠输出选项
+    expect(vf).toContain("color_trc=bt709");
+    expect(r.args).not.toContain("-color_trc");
   });
 
   it("手机观看下勾选 HDR：修正后改为 HEVC 10bit 并保留 HDR", () => {
@@ -512,5 +516,109 @@ describe("编码器缺失时不生成跑不起来的命令", () => {
       const r = evaluate(drone, recommendPlan(drone, s.id, missing), missing);
       expect(r.args.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("阶段 4 修正：与技术事实对齐", () => {
+  it.each(ALL)("%s / %s：不依赖 -color_primaries / -color_trc 输出选项（9.0 不生效）", (m, s) => {
+    const a = run(m, s).args;
+    expect(a).not.toContain("-color_primaries");
+    expect(a).not.toContain("-color_trc");
+  });
+
+  it.each(ALL)("%s / %s：输出到临时文件，带 -y", (m, s) => {
+    expect(run(m, s).args.slice(0, 4)).toEqual(["ffmpeg", "-hide_banner", "-nostdin", "-y"]);
+  });
+
+  it("MKV 保留字幕时带上附件（字体）", () => {
+    const withFonts = { ...bluray, attachments: 2 };
+    const r = evaluate(withFonts, recommendPlan(withFonts, "collection", caps), caps);
+    expect(has(r.args, "-map", "0:t?")).toBe(true);
+    const mp4 = recommendPlan(withFonts, "mobile", caps);
+    expect(has(evaluate(withFonts, mp4, caps).args, "-map", "0:t?")).toBe(false);
+  });
+
+  it("AMF 与 VideoToolbox 10bit 显式给 p010le", () => {
+    const plan = recommendPlan(drone, "archive", caps);
+    for (const enc of ["hevc_amf", "hevc_videotoolbox"] as const) {
+      const p = structuredClone(plan);
+      p.video.encoder = enc;
+      p.video.encoderAuto = false;
+      p.video.bitDepth = 10;
+      expect(has(buildArgs(drone, p), "-pix_fmt", "p010le")).toBe(true);
+    }
+  });
+});
+
+describe("容器装不下的音轨不原样复制", () => {
+  it("蓝光片源剪辑预处理（MOV）：TrueHD / DTS 转 24bit PCM，命令里不再 copy 它们", () => {
+    const r = run(bluray, "editing");
+    expect(r.plan.container).toBe("mov");
+    for (const t of r.plan.audio) {
+      const src = bluray.audio.find((a) => a.index === t.sourceIndex)!;
+      if (src.codec === "truehd" || src.codec.startsWith("dts")) {
+        expect(t.action).toBe("encode");
+        expect(t.codec).toBe("pcm_s24le");
+      }
+    }
+  });
+
+  it("收藏计划手动切到 MP4：多声道无损轨转 E-AC-3，保真度提示无损未保留", () => {
+    const plan = recommendPlan(bluray, "collection", caps);
+    plan.container = "mp4";
+    const next = updatePlan(plan, bluray, caps);
+    const thd = next.audio.find((t) => bluray.audio.find((a) => a.index === t.sourceIndex)?.codec === "truehd")!;
+    expect(thd.action).toBe("encode");
+    expect(thd.codec).toBe("eac3");
+    const r = evaluate(bluray, next, caps);
+    expect(r.fidelity.find((f) => f.kind === "lossless")?.state).not.toBe("achievable");
+  });
+});
+
+describe("阶段 4 实测修正", () => {
+  it.each(ALL)("%s / %s：重编码时硬解一律用 -hwaccel auto（-hwaccel qsv 会把帧留在 GPU 上导致失败）", (m, s) => {
+    const a = run(m, s).args;
+    const i = a.indexOf("-hwaccel");
+    if (i >= 0) expect(["auto", "videotoolbox"]).toContain(a[i + 1]);
+  });
+
+  it("转 CFR 时视频比音频短半帧以上才补齐尾部", () => {
+    const plan = recommendPlan(camera, "editing", caps);
+    plan.video.fps = { kind: "cfr", fps: 30 };
+    const withDur = (v: number, a: number): MediaInfo => ({
+      ...camera,
+      video: camera.video.map((x) => ({ ...x, durationSec: v })),
+      audio: camera.audio.map((x) => ({ ...x, durationSec: a })),
+    });
+    expect(tailPad(withDur(9.933, 10), plan)).toBe("tpad=stop_mode=clone:stop_duration=0.067");
+    expect(tailPad(withDur(9.99, 10), plan)).toBeUndefined();
+    expect(tailPad(withDur(10, 9.9), plan)).toBeUndefined();
+    expect(tailPad(camera, plan)).toBeUndefined();
+    // 没有音轨（航拍常见）时无从对齐，不补
+    expect(tailPad(drone, recommendPlan(drone, "editing", caps))).toBeUndefined();
+    const keep = { ...plan, video: { ...plan.video, fps: { kind: "keep" as const } } };
+    expect(tailPad(withDur(9.933, 10), keep)).toBeUndefined();
+  });
+});
+
+describe("Codex 阶段 4 审查修正", () => {
+  it("映射按真实视频流序号，不用 0:v:0（封面图可能排在前面）", () => {
+    const withCover: MediaInfo = { ...camera, video: camera.video.map((v) => ({ ...v, index: 1 })) };
+    const a = run(withCover, "archive").args;
+    expect(has(a, "-map", "0:1")).toBe(true);
+    expect(a).not.toContain("0:v:0");
+  });
+
+  it("带 90° 旋转的竖拍素材按显示方向缩放", () => {
+    const rotated: MediaInfo = { ...camera, video: camera.video.map((v) => ({ ...v, width: 1920, height: 1080, rotation: -90 })) };
+    const plan = recommendPlan(rotated, "social", caps);
+    plan.video.resolution = "720";
+    expect(targetDimensions(rotated.video[0]!, "720")).toEqual({ w: 720, h: 1280, portrait: true });
+    // 相机样本是 HLG，社交分享会色调映射：libplacebo 的目标尺寸也按显示方向
+    expect(buildArgs(rotated, plan).some((x) => x.includes("libplacebo=w=720:h=1280"))).toBe(true);
+    // 不转 SDR 时走普通缩放
+    plan.video.hdrAction = "keep";
+    plan.video.tonemap = undefined;
+    expect(buildArgs(rotated, plan).some((x) => x.startsWith("scale=720:-2"))).toBe(true);
   });
 });

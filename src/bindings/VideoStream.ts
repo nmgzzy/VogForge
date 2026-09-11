@@ -15,4 +15,8 @@ fpsNominal: number, isVfr: boolean, bitDepth: 8 | 10 | 12, pixFmt: string, bitra
 /**
  * 显示旋转角度（度），来自 Display Matrix；宽高是编码尺寸
  */
-rotation: number, frameCount?: number, };
+rotation: number, frameCount?: number, 
+/**
+ * 这条流自己的时长（秒）。与音轨时长对比，转固定帧率时补齐尾部
+ */
+durationSec?: number, };

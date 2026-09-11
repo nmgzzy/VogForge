@@ -256,11 +256,12 @@ export function defaultFidelity(media: MediaInfo, scenario: Scenario): FidelityR
 const CONTAINER_AUDIO: Record<Container, readonly string[]> = {
   mp4: ["aac", "ac3", "eac3", "opus", "mp3", "flac"],
   mov: ["aac", "ac3", "eac3", "alac", "pcm_s16le", "pcm_s24le"],
-  mkv: ["aac", "ac3", "eac3", "opus", "mp3", "flac", "truehd", "dts", "pcm_s16le", "pcm_s24le"],
+  mkv: [],
 };
 
+/** 音频能否原样放进容器：MKV 什么都装得下，MP4 / MOV 按白名单（与 vidforge-core 的 container.rs 一致） */
 export function audioFitsContainer(codec: string, container: Container): boolean {
-  return CONTAINER_AUDIO[container].includes(codec);
+  return container === "mkv" || CONTAINER_AUDIO[container].includes(codec);
 }
 
 function primaryAudio(media: MediaInfo): AudioStream | undefined {
@@ -289,12 +290,26 @@ export function buildAudioTracks(media: MediaInfo, plan: TranscodePlan): AudioTr
       role: "compat",
     });
 
-  const copyOf = (a: AudioStream): AudioTrackPlan => ({
-    sourceIndex: a.index,
-    action: "copy",
-    title: a.title,
-    role: "original",
-  });
+  // 容器装不下的音轨不能原样复制（例如 TrueHD 进 MOV / MP4），否则命令必然失败。改为重编码：
+  // MOV 多用于剪辑，转 24bit PCM 保住音质；MP4 多声道转 E-AC-3、立体声转 AAC。保真度面板照常提示无损未保留
+  const copyOf = (a: AudioStream): AudioTrackPlan => {
+    if (audioFitsContainer(a.codec, plan.container)) {
+      return { sourceIndex: a.index, action: "copy", title: a.title, role: "original" };
+    }
+    if (plan.container === "mov") {
+      return { sourceIndex: a.index, action: "encode", codec: "pcm_s24le", title: a.title, role: "original" };
+    }
+    const multi = a.channels > 2;
+    return {
+      sourceIndex: a.index,
+      action: "encode",
+      codec: multi ? "eac3" : "aac",
+      bitrateKbps: multi ? 640 : 256,
+      channels: multi ? Math.min(a.channels, 6) : a.channels,
+      title: a.title,
+      role: "original",
+    };
+  };
 
   switch (plan.audioMode) {
     case "copy_all":

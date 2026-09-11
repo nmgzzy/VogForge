@@ -111,6 +111,9 @@ pub struct VideoStream {
     pub rotation: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_count: Option<u64>,
+    /// 这条流自己的时长（秒）。与音轨时长对比，转固定帧率时补齐尾部
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -134,6 +137,8 @@ pub struct AudioStream {
     pub lossless: bool,
     pub atmos: bool,
     pub dts_x: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
