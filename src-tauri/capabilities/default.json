@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口的权限：核心 API、文件对话框、打开链接与在文件管理器中定位、系统通知",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-message",
+    "opener:allow-open-url",
+    "opener:allow-reveal-item-in-dir",
+    "notification:default"
+  ]
+}

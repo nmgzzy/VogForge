@@ -1,5 +1,7 @@
 import { Bookmark, Clapperboard, Cpu, ListVideo, Monitor, Moon, Settings, Sun, type LucideIcon } from "lucide-react";
+import { backend } from "@/backend";
 import { cn } from "@/lib/cn";
+import type { EnvStatus } from "@/lib/types";
 import { useCapabilities } from "@/stores/capability";
 import { useQueue } from "@/stores/queue";
 import { useUi, type ThemePref, type View } from "@/stores/ui";
@@ -28,6 +30,18 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
+/** 侧栏底部的环境状态：正常时安静的绿点，出问题才醒目 */
+export const ENV_STATUS: Record<EnvStatus, { label: string; dot: string; pulse: boolean; hint: string }> = {
+  ready: { label: "环境就绪", dot: "bg-ok", pulse: true, hint: "" },
+  probing: { label: "正在探测环境…", dot: "bg-accent", pulse: true, hint: "探测完成前先按 CPU 软编给方案" },
+  missing: { label: "未找到 ffmpeg", dot: "bg-danger", pulse: false, hint: "点此查看如何安装" },
+  too_old: { label: "ffmpeg 版本过低", dot: "bg-warn", pulse: false, hint: "需要 7.1 或更高版本" },
+  broken: { label: "ffmpeg 无法运行", dot: "bg-danger", pulse: false, hint: "点此查看原因" },
+};
+
+/** 调用后端本身失败（不是没找到 ffmpeg） */
+export const ENV_ERROR = { label: "环境探测失败", dot: "bg-danger", pulse: false, hint: "点此查看原因并重试" };
+
 const THEME_CYCLE: Record<ThemePref, { next: ThemePref; icon: LucideIcon; label: string }> = {
   system: { next: "light", icon: Monitor, label: "跟随系统" },
   light: { next: "dark", icon: Sun, label: "浅色" },
@@ -40,6 +54,8 @@ export function Sidebar() {
   const theme = useUi((s) => s.theme);
   const setTheme = useUi((s) => s.setTheme);
   const caps = useCapabilities((s) => s.caps);
+  const probing = useCapabilities((s) => s.probing);
+  const error = useCapabilities((s) => s.error);
   const active = useQueue((s) => s.jobs.filter((j) => j.status === "running" || j.status === "queued").length);
   const running = useQueue((s) => s.jobs.filter((j) => j.status === "running").length);
 
@@ -47,6 +63,11 @@ export function Sidebar() {
   const hwVendors = [...new Set(hw.map((e) => e.vendor))];
   const vendorName = { intel: "Intel QSV", nvidia: "NVENC", amd: "AMF", apple: "VideoToolbox", software: "" };
   const t = THEME_CYCLE[theme];
+  const status = error
+    ? ENV_ERROR
+    : probing && caps.status !== "ready"
+      ? ENV_STATUS.probing
+      : ENV_STATUS[caps.status];
 
   return (
     <aside className="flex w-[196px] shrink-0 flex-col border-r border-line bg-sunken">
@@ -54,7 +75,7 @@ export function Sidebar() {
         <LogoMark className="size-7" />
         <div className="leading-tight">
           <div className="text-[14px] font-semibold tracking-tight">VidForge</div>
-          <div className="text-[10.5px] text-subtle">v0.1 · 预览版</div>
+          <div className="text-[10.5px] text-subtle">{backend.kind === "mock" ? "v0.1 · 浏览器预览" : "v0.1"}</div>
         </div>
       </div>
 
@@ -94,14 +115,18 @@ export function Sidebar() {
         >
           <div className="flex items-center gap-1.5 text-[11px] text-subtle">
             <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-ok opacity-60" />
-              <span className="relative inline-flex size-1.5 rounded-full bg-ok" />
+              {status.pulse && <span className={cn("absolute inline-flex size-full animate-ping rounded-full opacity-60", status.dot)} />}
+              <span className={cn("relative inline-flex size-1.5 rounded-full", status.dot)} />
             </span>
-            环境就绪
+            {status.label}
           </div>
-          <div className="mt-1 font-mono text-[11.5px] text-fg">ffmpeg {caps.version}</div>
+          {caps.versionNumber && <div className="mt-1 font-mono text-[11.5px] text-fg">ffmpeg {caps.versionNumber}</div>}
           <div className="mt-0.5 text-[11px] text-muted">
-            {hwVendors.length ? `GPU：${hwVendors.map((v) => vendorName[v]).join("、")}` : "仅 CPU 软编"}
+            {caps.status === "ready" && !error
+              ? hwVendors.length
+                ? `GPU：${hwVendors.map((v) => vendorName[v]).join("、")}`
+                : "仅 CPU 软编"
+              : status.hint}
           </div>
         </button>
 

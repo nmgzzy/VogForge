@@ -528,6 +528,33 @@ ffmpeg 会打印 `Using the %s ratecontrol method`。解析这行可确认实际
 
 **[实测]** 本机列出的 hwaccel：`cuda vaapi dxva2 qsv d3d11va opencl vulkan d3d12va amf`。列出不等于可用，仍需第 2、3 层探测。
 
+### 7.6 探测实现中踩到的坑
+
+以下均为 **[实测]**（阶段 2 实现能力探测时在开发机上验证）。
+
+**不支持的像素格式会被静默替换。** 给 `h264_qsv` 传 `-pix_fmt p010le`，ffmpeg 只在 warning 级别打印 `Incompatible pixel format 'p010le' for codec 'h264_qsv', auto-selecting format 'nv12'`，然后照常编码、退出码 0。用 `-v error` 试编码时这条警告被吞掉，会把 8bit 误判为支持 10bit。所以 10bit 试编码之前，必须先确认目标格式出现在 `-h encoder=<名称>` 的 `Supported pixel formats:` 列表里。本机实测列表：
+
+| 编码器 | Supported pixel formats（节选） |
+|---|---|
+| `h264_qsv` | `nv12 qsv`（没有 10bit） |
+| `hevc_qsv` | `nv12 p010le p012le … qsv` |
+| `av1_qsv` | `nv12 p010le qsv` |
+| `*_nvenc` / `*_amf` | 含 `p010le`，但 H.264 10bit 仍取决于显卡代际，需试编码确认 |
+
+**编译开关要看组件，不看 configuration 行。** `--enable-xxx` 只列出显式开启的库，自动检测到的（macOS 上的 VideoToolbox、多数 Linux 发行版的硬件后端）不会出现在里面。判断是否具备某能力，一律看对应组件是否存在：编码器看 `-encoders`，libplacebo / libzimg / libvmaf 看 `-filters` 里的 `libplacebo` / `zscale` / `libvmaf`，libbluray 看 `-protocols` 里的 `bluray`。
+
+**第 2 层的写法。** `-init_hw_device` 单独使用会报缺少输出，需要带一个最小的输入输出：
+
+```bash
+ffmpeg -hide_banner -nostdin -v error -init_hw_device qsv=hw -f lavfi -i nullsrc=s=64x64:d=0.04 -f null -
+```
+
+本机结果：`qsv d3d11va d3d12va dxva2 vulkan opencl` 成功；`cuda` 报 `Cannot load nvcuda.dll`，`amf` 报 `DLL amfrt64.dll failed to open`，`vaapi` 报 `Failed to initialise VAAPI connection`。9.0 已支持 `-init_hw_device amf`。
+
+**耗时。** QSV 设备初始化约 600 ms，QSV 试编码 3 帧约 800 ms；NVENC / AMF 因缺 DLL 在 80 ms 内失败；三条色调映射管线试运行 0.1–1.7 s（`tonemap_opencl` 最慢）。三层全部做完、4 路并发时约 4–5 秒，所以探测必须放后台并缓存。
+
+**其他。** `libsvtav1` 在 `-v error` 下仍会往 stderr 打印 `Svt[info]` 横幅，判断失败时不能看 stderr 是否为空，要看退出码。Windows 注册表里本机核显的名称是 `Intel(R) Graphics`（不含 Arc 字样）。
+
 ## 8. 进度与码率控制
 
 ### 8.1 `-progress` 是块协议

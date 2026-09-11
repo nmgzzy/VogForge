@@ -4,6 +4,8 @@
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [TODO](todo.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
+当前进度：阶段 0–2 已完成，达到里程碑 M2（环境可知）。逐项状态见 [TODO](todo.md)。
+
 ## 总体策略
 
 分七个阶段，每个阶段结束时项目都处于**可运行、可验证**的状态，而不是等到最后才第一次跑起来。

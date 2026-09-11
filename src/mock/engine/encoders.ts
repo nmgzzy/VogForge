@@ -36,11 +36,22 @@ export const isHardware = (id: EncoderId) => encoderVendor(id) !== "software";
 const HW_ORDER: Record<Capabilities["platform"], Vendor[]> = {
   windows: ["nvidia", "intel", "amd"],
   macos: ["apple"],
+  linux: ["nvidia", "intel"],
 };
 
 export interface EncoderPick {
   encoder: EncoderId;
   reason: string;
+}
+
+/** 该编码格式的软件编码器在当前 ffmpeg 里可用 */
+export function softwareUsable(codec: Codec, caps: Capabilities): boolean {
+  return caps.encoders.some((e) => e.id === SOFTWARE_ENCODER[codec] && e.usable);
+}
+
+/** 该编码格式有任何一个可用的编码器（软编或硬编） */
+export function codecAvailable(codec: Codec, caps: Capabilities): boolean {
+  return caps.encoders.some((e) => e.codec === codec && e.usable);
 }
 
 export function pickEncoder(
@@ -51,6 +62,14 @@ export function pickEncoder(
   const sw = SOFTWARE_ENCODER[codec];
   if (opts.needDv) {
     return { encoder: sw, reason: "杜比视界的动态元数据只能由软件编码器写入，硬件编码器无法输出杜比视界" };
+  }
+  if (!softwareUsable(codec, caps)) {
+    // 软件编码器没有编译进当前 ffmpeg（例如 essentials 构建没有 libsvtav1）：只能用硬件编码器
+    const hw = caps.encoders.filter((e) => e.codec === codec && e.usable && e.vendor !== "software");
+    const best = hw.find((e) => !opts.need10bit || e.tenBit) ?? hw[0];
+    return best
+      ? { encoder: best.id, reason: `当前 ffmpeg 没有 ${sw}，改用 ${VENDOR_LABEL[best.vendor]} 硬件编码` }
+      : { encoder: sw, reason: `当前 ffmpeg 没有任何可用的 ${CODEC_LABEL[codec]} 编码器` };
   }
   if (!opts.preferHw) {
     return { encoder: sw, reason: "软件编码在同等体积下画质最好，适合长期保存" };

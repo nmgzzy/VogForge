@@ -4,7 +4,7 @@ import { cn } from "@/lib/cn";
 import { channelLabel, formatFps } from "@/lib/format";
 import { useCapabilities } from "@/stores/capability";
 import { useProject } from "@/stores/project";
-import { CODEC_LABEL, defaultPreset, qualityMeta, qualityValue, VENDOR_LABEL } from "@/mock/engine/encoders";
+import { CODEC_LABEL, codecAvailable, defaultPreset, qualityMeta, qualityValue, VENDOR_LABEL } from "@/mock/engine/encoders";
 import { isExtremeVfr, recommendCfrTarget, STANDARD_FPS } from "@/mock/engine/fps";
 import { pickTonemap } from "@/mock/engine/color";
 import { Badge, Field, Section, Segmented, Select, Switch } from "./ui";
@@ -161,7 +161,16 @@ export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: T
           <Segmented<Codec>
             className="w-full"
             value={vp.codec}
-            options={(["h264", "hevc", "av1"] as const).map((c) => ({ value: c, label: CODEC_LABEL[c] }))}
+            options={(["h264", "hevc", "av1"] as const).map((c) => {
+              // 探测完成前（probing）不置灰，避免界面在启动时闪一下
+              const off = caps.status === "ready" && !codecAvailable(c, caps);
+              return {
+                value: c,
+                label: CODEC_LABEL[c],
+                disabled: off,
+                title: off ? `当前 ffmpeg 没有可用的 ${CODEC_LABEL[c]} 编码器` : undefined,
+              };
+            })}
             onChange={(c) =>
               patch((p) => {
                 p.video.codec = c;

@@ -1,0 +1,20 @@
+[package]
+name = "vidforge-core"
+description = "VidForge 核心库：ffmpeg 定位、能力探测、媒体分析、命令构建、策略与队列。不依赖 Tauri。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ts-rs.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
+tempfile = "3"

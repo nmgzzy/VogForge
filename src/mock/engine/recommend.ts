@@ -12,9 +12,19 @@ import type {
   Scenario,
   TranscodePlan,
 } from "@/lib/types";
-import { defaultPreset, encoderCodec, encoderSupports10bit, pickEncoder, qualityValue } from "./encoders";
+import {
+  codecAvailable,
+  defaultPreset,
+  encoderCodec,
+  encoderSupports10bit,
+  pickEncoder,
+  qualityValue,
+} from "./encoders";
 import { recommendCfrTarget } from "./fps";
 import { pickTonemap, tonemapAvailable } from "./color";
+
+/** 场景默认格式在当前 ffmpeg 里编不了时，按这个顺序换一种 */
+const CODEC_FALLBACK: readonly Codec[] = ["hevc", "h264", "av1"];
 
 export interface ScenarioMeta {
   id: Scenario;
@@ -48,6 +58,11 @@ interface Profile {
   cfr: "never" | "if_vfr" | "always";
   shortGop: boolean;
   keepDv: boolean;
+}
+
+/** 场景对这个素材默认采用的编码格式 */
+export function scenarioCodec(scenario: Scenario, media: MediaInfo): Codec {
+  return profileFor(scenario, media).codec;
 }
 
 function profileFor(scenario: Scenario, media: MediaInfo): Profile {
@@ -330,6 +345,19 @@ export function normalizePlan(plan: TranscodePlan, media: MediaInfo, caps: Capab
   const vp = next.video;
 
   if (vp.action === "encode") {
+    // 当前 ffmpeg 根本编不了这种格式（例如 essentials 构建没有任何 AV1 编码器）时换一种能编的，
+    // 否则会生成一条跑不起来的命令。环境完全不可用时不动，界面另有提示
+    if (!codecAvailable(vp.codec, caps)) {
+      const alt = CODEC_FALLBACK.find((c) => c !== vp.codec && codecAvailable(c, caps));
+      if (alt) {
+        vp.codec = alt;
+        vp.encoderAuto = true;
+      }
+    }
+    if (!vp.encoderAuto && !caps.encoders.some((e) => e.id === vp.encoder && e.usable)) {
+      // 手选的编码器在当前环境不可用（例如换了 ffmpeg），回到自动选择
+      vp.encoderAuto = true;
+    }
     if (!vp.encoderAuto && encoderCodec(vp.encoder) !== vp.codec) {
       // 手选的编码器与新编码格式不匹配，回到自动选择
       vp.encoderAuto = true;

@@ -1,0 +1,2 @@
+# ffmpeg 真实输出的 fixture 保持原样（Windows 构建输出 CRLF），不做换行转换
+crates/vidforge-core/tests/fixtures/** -text

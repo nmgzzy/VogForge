@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MediaInfo, Scenario } from "@/lib/types";
+import type { Capabilities, MediaInfo, Scenario } from "@/lib/types";
 import { MOCK_CAPABILITIES as caps } from "../capabilities";
 import { MOCK_MEDIA } from "../media";
 import { applyFix, evaluate, recommendPlan, SCENARIOS, updatePlan } from "./index";
@@ -453,5 +453,64 @@ describe("Codex 审查修复：附加参数支持引号", () => {
     plan.video.extraArgs = '-metadata title="My Video"';
     const r = evaluate(drone, plan, caps);
     expect(has(r.args, "-metadata", "title=My Video")).toBe(true);
+  });
+});
+
+// ───────────────── 当前 ffmpeg 缺少某些编码器（阶段 2 起能力来自真实探测） ─────────────────
+
+describe("编码器缺失时不生成跑不起来的命令", () => {
+  const without = (...ids: string[]): Capabilities => ({
+    ...caps,
+    encoders: caps.encoders.map((e) =>
+      ids.includes(e.id) ? { ...e, usable: false, tenBit: false, failure: "not_built" as const } : e,
+    ),
+  });
+
+  it("essentials 构建没有 libsvtav1、但有 av1_qsv：最小体积仍用 AV1，改走硬件编码并说明", () => {
+    const c = without("libsvtav1");
+    const r = evaluate(camera, recommendPlan(camera, "smallest", c), c);
+    expect(r.plan.video.codec).toBe("av1");
+    expect(r.plan.video.encoder).toBe("av1_qsv");
+    expect(r.args).not.toContain("libsvtav1");
+    expect(r.decisions.some((d) => d.field === "编码器" && d.severity === "warn" && d.reason.includes("软件编码器"))).toBe(true);
+  });
+
+  it("完全没有可用的 AV1 编码器：换成 HEVC 并在推荐说明里写明原因", () => {
+    const c = without("libsvtav1", "av1_qsv");
+    const r = evaluate(camera, recommendPlan(camera, "smallest", c), c);
+    expect(r.plan.video.codec).toBe("hevc");
+    expect(r.args.join(" ")).not.toMatch(/av1/);
+    const d = r.decisions.find((x) => x.field === "编码格式");
+    expect(d?.severity).toBe("warn");
+    expect(d?.reason).toContain("没有可用的 AV1 编码器");
+  });
+
+  it("用户切到不可用的格式时，normalize 会换回能编的格式", () => {
+    const c = without("libsvtav1", "av1_qsv");
+    const plan = recommendPlan(drone, "archive", c);
+    plan.video.codec = "av1";
+    expect(updatePlan(plan, drone, c).video.codec).toBe("hevc");
+  });
+
+  it("手选的编码器在新环境里不可用时回到自动选择", () => {
+    const plan = recommendPlan(drone, "streaming", caps);
+    plan.video.encoderAuto = false;
+    plan.video.encoder = "hevc_qsv";
+    const c = without("hevc_qsv", "h264_qsv", "av1_qsv");
+    const next = updatePlan(plan, drone, c);
+    expect(next.video.encoderAuto).toBe(true);
+    expect(next.video.encoder).not.toBe("hevc_qsv");
+  });
+
+  it("环境完全不可用（没找到 ffmpeg）时不乱换格式，也不崩溃", () => {
+    const missing: Capabilities = {
+      ...caps,
+      status: "missing",
+      encoders: caps.encoders.map((e) => ({ ...e, usable: false })),
+    };
+    for (const s of SCENARIOS) {
+      const r = evaluate(drone, recommendPlan(drone, s.id, missing), missing);
+      expect(r.args.length).toBeGreaterThan(0);
+    }
   });
 });

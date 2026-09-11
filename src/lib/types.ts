@@ -1,9 +1,34 @@
 /**
  * 前后端共享的核心类型。
  *
- * 结构与 docs/design.md 第 3 章对齐。阶段 4 起由 Rust 端通过 ts-rs 生成到
- * src/bindings/，届时本文件改为从 bindings re-export，不再手写。
+ * 结构与 docs/design.md 第 3 章对齐。已迁到 Rust 的类型由 ts-rs 生成到 src/bindings/
+ * （改 Rust 模型后运行 cargo test 重新生成），这里只做 re-export；其余类型随各阶段逐步迁移。
  */
+
+import type { Codec } from "@/bindings/Codec";
+import type { EncoderId } from "@/bindings/EncoderId";
+import type { ToneMapPipeline } from "@/bindings/ToneMapPipeline";
+
+export type { AfterAction } from "@/bindings/AfterAction";
+export type { BuildFlag } from "@/bindings/BuildFlag";
+export type { Capabilities } from "@/bindings/Capabilities";
+export type { Codec } from "@/bindings/Codec";
+export type { ConflictPolicy } from "@/bindings/ConflictPolicy";
+export type { DeviceProbe } from "@/bindings/DeviceProbe";
+export type { EncoderId } from "@/bindings/EncoderId";
+export type { EncoderProbe } from "@/bindings/EncoderProbe";
+export type { EnvStatus } from "@/bindings/EnvStatus";
+export type { ExternalTool } from "@/bindings/ExternalTool";
+export type { FailureKind } from "@/bindings/FailureKind";
+export type { GpuInfo } from "@/bindings/GpuInfo";
+export type { Lang } from "@/bindings/Lang";
+export type { LocateSource } from "@/bindings/LocateSource";
+export type { Platform } from "@/bindings/Platform";
+export type { ProbeProgress } from "@/bindings/ProbeProgress";
+export type { Settings } from "@/bindings/Settings";
+export type { ToneMapPipeline } from "@/bindings/ToneMapPipeline";
+export type { TonemapProbe } from "@/bindings/TonemapProbe";
+export type { Vendor } from "@/bindings/Vendor";
 
 // ───────────────────────── 媒体分析 ─────────────────────────
 
@@ -123,25 +148,7 @@ export type Scenario =
   | "remux";
 
 export type QualityTier = "lossless" | "high" | "standard" | "small";
-export type Codec = "h264" | "hevc" | "av1";
 export type Container = "mkv" | "mp4" | "mov";
-export type Vendor = "software" | "intel" | "nvidia" | "amd" | "apple";
-
-export type EncoderId =
-  | "libx264"
-  | "libx265"
-  | "libsvtav1"
-  | "h264_qsv"
-  | "hevc_qsv"
-  | "av1_qsv"
-  | "h264_nvenc"
-  | "hevc_nvenc"
-  | "av1_nvenc"
-  | "h264_amf"
-  | "hevc_amf"
-  | "av1_amf"
-  | "h264_videotoolbox"
-  | "hevc_videotoolbox";
 
 export type ResolutionPreset = "source" | "2160" | "1440" | "1080" | "720" | "480";
 
@@ -152,7 +159,6 @@ export type FpsPolicy =
 
 export type HdrAction = "keep" | "tonemap" | "strip";
 export type DoviAction = "preserve" | "disable" | "remux";
-export type ToneMapPipeline = "libplacebo" | "tonemap_opencl" | "zscale" | "scale_vt";
 
 export interface VideoPlan {
   action: "copy" | "encode";
@@ -261,43 +267,6 @@ export interface PlanResult {
   fpsInsight?: FpsInsight;
   /** 源码率已低于目标时的"不建议转码"提示 */
   notWorthIt?: string;
-}
-
-// ───────────────────────── 环境能力 ─────────────────────────
-
-export type FailureKind = "device_missing" | "capability" | "param" | "resource" | "unknown";
-
-export interface EncoderProbe {
-  id: EncoderId;
-  vendor: Vendor;
-  codec: Codec;
-  usable: boolean;
-  tenBit: boolean;
-  error?: string;
-  failure?: FailureKind;
-}
-
-export interface BuildFlag {
-  name: string;
-  present: boolean;
-  affects: string;
-}
-
-export interface Capabilities {
-  ffmpegPath: string;
-  ffprobePath: string;
-  version: string;
-  buildSource: string;
-  buildFlags: BuildFlag[];
-  encoders: EncoderProbe[];
-  hwaccels: string[];
-  tonemap: { id: ToneMapPipeline; available: boolean; note: string }[];
-  dolbyVisionEncode: boolean;
-  doviSplit: boolean;
-  external: { name: string; found: boolean; purpose: string }[];
-  gpus: { name: string; driver: string }[];
-  platform: "windows" | "macos";
-  probedAt: string;
 }
 
 // ───────────────────────── 队列 ─────────────────────────

@@ -1,0 +1,23 @@
+[package]
+name = "vidforge"
+description = "VidForge 桌面外壳：只做命令注册、事件转发与窗口能力，业务逻辑全部在 vidforge-core。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "vidforge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+vidforge-core = { path = "../crates/vidforge-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"

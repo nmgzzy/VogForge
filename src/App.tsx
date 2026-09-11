@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { Sidebar } from "@/components/Sidebar";
+import { useCapabilities } from "@/stores/capability";
 import { useProject } from "@/stores/project";
 import { useQueue } from "@/stores/queue";
+import { useSettings } from "@/stores/settings";
 import { applyTheme, useUi } from "@/stores/ui";
 import { EnvironmentView } from "@/views/EnvironmentView";
 import { PresetsView } from "@/views/PresetsView";
@@ -22,6 +24,15 @@ export default function App() {
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
   }, [theme]);
+
+  // 启动：读取设置、探测环境（优先命中缓存）。能力变化后按新能力重新整理已有计划
+  useEffect(() => {
+    void useSettings.getState().load();
+    void useCapabilities.getState().load();
+    return useCapabilities.subscribe((s, prev) => {
+      if (s.caps !== prev.caps) useProject.getState().refreshPlans();
+    });
+  }, []);
 
   // 预览模式：载入示例素材，并驱动队列的模拟进度
   useEffect(() => {

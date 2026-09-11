@@ -22,6 +22,8 @@ interface ProjectState {
   applyFix: (fixId: string) => void;
   /** 把当前文件的场景应用到全部文件（各文件按自身情况重新推荐） */
   applyScenarioToAll: () => void;
+  /** 环境能力变化后（例如探测完成），按新能力重新整理全部计划 */
+  refreshPlans: () => void;
 }
 
 const caps = () => useCapabilities.getState().caps;
@@ -89,6 +91,16 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (!scenario) return;
     const next: Record<string, TranscodePlan> = {};
     for (const f of files) next[f.id] = f.id === selectedId ? plans[f.id]! : recommendPlan(f, scenario, caps());
+    set({ plans: next });
+  },
+
+  refreshPlans: () => {
+    const { files, plans } = get();
+    const next: Record<string, TranscodePlan> = {};
+    for (const f of files) {
+      const p = plans[f.id];
+      if (p) next[f.id] = updatePlan(structuredClone(p), f, caps());
+    }
     set({ plans: next });
   },
 }));

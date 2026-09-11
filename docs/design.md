@@ -123,16 +123,25 @@ Decision { field: String, value: String, reason_zh: String, severity: Info | War
 
 ### 3.3 Capabilities —— 环境能力快照
 
+定义在 `model/caps.rs`。
+
 ```
 Capabilities
-├─ ffmpeg_path, ffprobe_path, version, build_flags: HashSet<String>
-├─ encoders, decoders, filters, bsfs, protocols, hwaccels: HashSet<String>
-├─ probed: HashMap<EncoderId, ProbeResult>
-│   └─ ProbeResult { usable, stderr, classified: Option<FailureKind> }
-├─ tonemap_pipelines: Vec<ToneMapPipeline>   // 按质量排序的可用管线
-├─ external: ExternalTools                   // dovi_tool / hdr10plus_tool / mkvmerge
-└─ fingerprint: String                       // 缓存 key
+├─ status: Ready | Probing | Missing | TooOld | Broken, status_detail   // 能否开始转码
+├─ ffmpeg_path, ffprobe_path, locate_source, searched, notes
+├─ version（原始版本串）, version_number（9.0.1 或"7.1+（开发版）"）, build_source
+├─ build_flags: Vec<BuildFlag { name, present, affects }>   // 按组件是否存在判断
+├─ encoders: Vec<EncoderProbe>          // 第 3 层：当前平台关心的全部编码器
+│   └─ EncoderProbe { id, vendor, codec, usable, ten_bit, error, failure: Option<FailureKind> }
+├─ hwaccels, devices: Vec<DeviceProbe { id, available, error }>   // 第 2 层
+├─ tonemap: Vec<TonemapProbe { id, available, note }>             // 按 5.3 的顺序
+├─ dolby_vision_encode, dovi_split
+├─ external: Vec<ExternalTool>          // dovi_tool / hdr10plus_tool / mkvmerge
+├─ gpus: Vec<GpuInfo { name, driver }>, platform, probed_at
+└─ fingerprint: String                  // 缓存 key
 ```
+
+`FailureKind` 除 4.2 节的五类外，还有 `NotBuilt`：当前 ffmpeg 根本没编译这个编码器。探测完成前，前端用 `status = Probing` 的占位快照：软件编码器按可用处理，硬件与色调映射一律不可用，这样界面不必等探测结束就能给出软编方案。
 
 ## 4. 关键设计
 
@@ -151,7 +160,11 @@ Capabilities
 - 用 `-f null -` 而不是 Windows 的 `NUL`。`NUL` 不可 seek，MP4 muxer 会因此失败，引入与编码器无关的噪声。
 - 跑 3 帧而不是 1 帧。硬件编码器有 lookahead 队列，1 帧可能走不到真正的编码路径。
 
-探测结果缓存，key = ffmpeg 路径 + 文件修改时间 + 版本串 + GPU 名称 + 驱动版本。驱动更新后自动失效重测。
+- 10bit 试编码之前，先确认 10bit 像素格式出现在 `-h encoder=` 的支持列表里。ffmpeg 遇到不支持的格式会静默换成 8bit 继续编码，只看退出码会误判（技术事实文档 7.6 节）。
+- 编译开关按组件是否存在判断（编码器、滤镜、协议），不看 configuration 行，因为自动检测到的库不会出现在 `--enable-` 列表里。
+- 色调映射管线除了检查滤镜存在，还要检查依赖设备（libplacebo 依赖 Vulkan、tonemap_opencl 依赖 OpenCL），最后用带 BT.2020/PQ 标签的测试图真跑 2 帧。
+
+三层探测用 4 路并发，开发机上完整跑一遍约 4–5 秒。结果缓存在 `~/.vidforge/capabilities.json`，key = ffmpeg 路径 + 文件修改时间 + 文件大小 + 版本串 + GPU 名称 + 驱动版本，外加缓存格式版本号，驱动更新或探测逻辑变化后自动失效重测。命中缓存时仍会重新查找外部工具，开销可以忽略。
 
 **任务级 dry-run**：每个任务开始前，用这个任务真实的编码参数（preset/profile/pix_fmt/RC 全套）换成 lavfi 输入跑 3 帧。耗时不到 1 秒，能抓住"设备可用但这组参数不支持"的情况，比跑了 20 分钟才失败要好得多。
 
@@ -260,6 +273,7 @@ FidelityItem {
 | HDR 必须映射 | HDR 源输出 SDR 时强制插入色调映射滤镜，绝不只改色彩标签 |
 | 高价值内容提醒 | 检测到杜比视界 / Atmos / 无损音轨时主动建议启用保真度保留 |
 | P5 警告 | 杜比视界 Profile 5 无 HDR10 回退层，非 DV 播放器会显示绿/紫画面 |
+| 只用编得了的编码器 | 软件编码器没编译进当前 ffmpeg 时改用同格式的硬件编码器；整个格式都编不了时换一种能编的格式并给出警告；界面把编不了的格式置灰。绝不生成一条跑不起来的命令 |
 
 ### 4.6 进度解析（`ffmpeg/progress.rs`）
 
@@ -378,14 +392,22 @@ r_frame_rate == avg_frame_rate                     // 确实是 CFR
 
 ### 5.1 ffmpeg 定位顺序
 
-1. 用户在设置里手动指定的路径
-2. 应用内置目录（引导下载后存放处）
-3. `PATH`
-4. 平台常见安装位置
-   - Windows：winget Packages 目录、`~\scoop\apps\ffmpeg\current\bin`、chocolatey bin、`C:\ffmpeg\bin`、`C:\Program Files\ffmpeg\bin`
-   - macOS：`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`
+1. 用户在设置里手动指定的路径（目录或 ffmpeg 可执行文件本身都可以）
+2. 应用内置目录 `~/.vidforge/ffmpeg/bin`（引导下载后存放处）
+3. 当前进程的 `PATH`
+4. 注册表中的 Machine/User PATH（仅 Windows）
+5. 平台常见安装位置
+   - Windows：winget 的 Links 与 Packages 目录、`~\scoop\apps\ffmpeg\current\bin`、`~\scoop\shims`、chocolatey bin、`C:\ffmpeg\bin`、`C:\Program Files\ffmpeg\bin`
+   - macOS：`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`（从 Finder 启动的应用不继承 shell 的 PATH）
 
-注意 Windows 上刚安装完 ffmpeg 时，注册表 PATH 已更新但正在运行的进程环境未刷新。因此第 4 步还要读取注册表中的 Machine/User PATH，而不只看当前进程的环境变量。这个场景在开发期已实际遇到。
+Windows 上刚安装完 ffmpeg 时，注册表 PATH 已更新但正在运行的进程环境未刷新，所以第 4 步要读注册表，而不只看进程环境变量。这个场景在开发期已实际遇到，从 Git Bash 启动的应用也是靠这一步找到 ffmpeg 的。
+
+取舍规则：
+
+- 候选目录按大小写不敏感去重（Windows）。同一目录必须同时有 ffmpeg 与 ffprobe，且两者都能输出版本信息才算找到。
+- 目录里有 ffmpeg 却用不了（缺 ffprobe、无法运行、输出不可识别）时记为 `Broken`，与根本没装（`Missing`）区分开，界面给出的建议不同。
+- 用户指定的路径总是被采用，即使版本过低（这是用户的明确选择，界面会提示升级）。
+- 其余来源优先采用第一个满足最低版本的；都不满足时才退回第一个找到的旧版本。避免 PATH 里一个旧版本挡住常见位置里的新版本。
 
 ### 5.2 VFR 判定必须用两级判据
 
@@ -492,15 +514,26 @@ macOS 的 Homebrew 构建三条管线全缺，这是跨平台最大的坑，必�
 
 ### 6.5 状态管理
 
-三个 Zustand store，职责不重叠：
+Zustand store，职责不重叠：
 
 | store | 持有 | 来源 |
 |---|---|---|
-| `useCapabilityStore` | `Capabilities`、探测进度 | 启动时后端探测，只读 |
-| `useProjectStore` | 导入的文件列表、当前选中、当前 `TranscodePlan`、`Resolution` | 用户操作 + 后端推荐 |
-| `useQueueStore` | 任务列表与实时进度 | 后端事件推送 |
+| `useCapabilities` | `Capabilities`、探测进度、调用错误 | 启动时后端探测（优先缓存），只读 |
+| `useSettings` | 用户设置 | 后端读写 `~/.vidforge/config.json` |
+| `useProject` | 导入的文件列表、当前选中、各文件的 `TranscodePlan` | 用户操作 + 后端推荐 |
+| `useQueue` | 任务列表与实时进度 | 后端事件推送 |
+
+能力快照变化（例如探测完成）后，`useProject.refreshPlans` 按新能力重新整理全部计划。
 
 前端不做任何编码决策。场景推荐、参数校验、保真度求解全部走后端，前端只负责展示和收集输入。这样决策逻辑只有一份实现，且可被 Rust 测试覆盖。
+
+**后端适配层。** 前端通过 `src/backend/` 的 `Backend` 接口访问后端：运行在 Tauri 窗口里时是 `invoke` 与事件监听，浏览器预览和组件测试里是 mock 实现。store 只依赖接口，不感知运行环境。命令与事件名：
+
+| 命令 / 事件 | 作用 |
+|---|---|
+| `get_capabilities(force)` | 探测环境；`force = false` 时优先用缓存。并发调用会串行化 |
+| `get_settings` / `save_settings(settings)` | 读写设置，后端把越界值拉回合理范围后返回 |
+| 事件 `probe://progress` | 探测进度 `ProbeProgress { stage, done, total }` |
 
 ### 6.6 信息密度原则
 

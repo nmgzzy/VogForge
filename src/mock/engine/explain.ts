@@ -1,9 +1,17 @@
 import type { Capabilities, Decision, Estimate, FpsInsight, MediaInfo, QualityTier, TranscodePlan } from "@/lib/types";
 import { formatFps, formatPercent } from "@/lib/format";
-import { CODEC_LABEL, encoderVendor, isHardware, qualityMeta, VENDOR_LABEL } from "./encoders";
+import {
+  CODEC_LABEL,
+  codecAvailable,
+  encoderVendor,
+  isHardware,
+  qualityMeta,
+  softwareUsable,
+  VENDOR_LABEL,
+} from "./encoders";
 import { isExtremeVfr } from "./fps";
 import { targetDimensions } from "./args";
-import { preferHwFor } from "./recommend";
+import { preferHwFor, scenarioCodec } from "./recommend";
 import { pickTonemap } from "./color";
 
 const TIER_LABEL: Record<QualityTier, string> = {
@@ -47,8 +55,18 @@ export function explain(
 
   // ── 编码器 ──
   const vendor = encoderVendor(vp.encoder);
-  if (!vp.encoderAuto) {
+  const encoderOk = caps.encoders.some((e) => e.id === vp.encoder && e.usable);
+  if (caps.status === "ready" && !encoderOk) {
+    add("编码器", vp.encoder, `当前 ffmpeg 没有任何可用的 ${CODEC_LABEL[vp.codec]} 编码器，这个计划无法执行`, "warn");
+  } else if (!vp.encoderAuto) {
     add("编码器", vp.encoder, "你手动指定了编码器，自动选择已关闭");
+  } else if (isHardware(vp.encoder) && !softwareUsable(vp.codec, caps)) {
+    add(
+      "编码器",
+      vp.encoder,
+      `当前 ffmpeg 没有 ${CODEC_LABEL[vp.codec]} 软件编码器，改用 ${VENDOR_LABEL[vendor]}；同画质下体积会大 15–30%`,
+      "warn",
+    );
   } else if (vp.dovi === "preserve") {
     add("编码器", vp.encoder, "杜比视界的逐帧元数据只能由软件编码器写入，因此本次不使用 GPU 编码");
   } else if (isHardware(vp.encoder)) {
@@ -66,7 +84,15 @@ export function explain(
   }
 
   // ── 编码格式 ──
-  if (plan.scenario === "editing") {
+  const wanted = scenarioCodec(plan.scenario, media);
+  if (vp.codec !== wanted && !codecAvailable(wanted, caps)) {
+    add(
+      "编码格式",
+      CODEC_LABEL[vp.codec],
+      `当前 ffmpeg 没有可用的 ${CODEC_LABEL[wanted]} 编码器，已改用 ${CODEC_LABEL[vp.codec]}`,
+      "warn",
+    );
+  } else if (plan.scenario === "editing") {
     add(
       "编码格式",
       CODEC_LABEL[vp.codec],

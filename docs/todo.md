@@ -1,6 +1,6 @@
 # VidForge TODO
 
-更新于 2026-09-11（阶段 1 完成）
+更新于 2026-09-11（阶段 2 完成）
 
 配套文档：[需求](requirements.md) · [设计](design.md) · [计划](plan.md) · [ffmpeg 技术事实](ffmpeg-facts.md)
 
@@ -18,21 +18,20 @@
 - [x] 实测 QSV 与 SVT-AV1 的 HDR10 元数据保留行为
 - [x] 实测 VFR 判定在 MP4 与 MKV 下的差异
 - [x] 实测三种 VFR 转 CFR 方案并选定 `-fps_mode:v cfr -r`
-- [ ] Cargo workspace：根 `Cargo.toml`，成员 `crates/vidforge-core` 与 `src-tauri`
-- [ ] `vidforge-core` crate 骨架与模块声明
-- [ ] Tauri 2 应用骨架与 `tauri.conf.json`
+- [x] Cargo workspace：根 `Cargo.toml`，成员 `crates/vidforge-core` 与 `src-tauri`
+- [x] `vidforge-core` crate 骨架与模块声明
+- [x] Tauri 2 应用骨架与 `tauri.conf.json`（含应用图标、CSP、窗口最小尺寸）
 - [x] Vite + React 19 + TypeScript 配置
 - [x] Tailwind CSS v4、Lucide 图标、Zustand
-- [ ] ts-rs 导出链路（Rust 类型生成到 `src/bindings/`）
-- [ ] `insta` 快照测试依赖
+- [x] ts-rs 导出链路（Rust 类型生成到 `src/bindings/`，`pnpm bindings` 重新生成）
+- [x] `insta` 快照测试依赖（阶段 4 开始使用）
 - [x] Vitest 配置
 - [x] README
 - [x] `.gitignore`、git 初始化
 
 ## 阶段 1：前端界面骨架（mock 数据）
 
-状态：已完成，等待用户确认界面后进入阶段 2。浏览器预览 `pnpm dev`，端口 1420。
-
+状态：已完成。浏览器预览 `pnpm dev`，端口 1420。
 
 - [x] 应用外壳：标题栏、侧栏导航、主工作区、底部命令预览条
 - [x] 主题：深色 / 浅色 / 跟随系统
@@ -69,31 +68,44 @@
 
 ## 阶段 2：ffmpeg 定位与能力探测
 
-- [ ] `locate.rs`
-  - [ ] 用户指定路径
-  - [ ] 应用内置目录
-  - [ ] 当前进程 PATH
-  - [ ] Windows 注册表 Machine/User PATH（刚安装时进程环境未刷新，开发期已实际遇到）
-  - [ ] Windows 常见安装位置：winget / scoop / chocolatey / `C:\ffmpeg`
-  - [ ] macOS 常见安装位置：`/opt/homebrew/bin` / `/usr/local/bin` / `/opt/local/bin`
-  - [ ] 同时定位 ffprobe，且校验两者版本一致
-- [ ] `capability.rs`
-  - [ ] 第 1 层：解析 `-version` 版本号、`-buildconf` 编译开关
-  - [ ] 第 1 层：解析 `-encoders` / `-decoders` / `-filters` / `-bsfs` / `-protocols` / `-hwaccels`
-  - [ ] 第 1 层：检测 `libx265` 是否含 `dolbyvision` 选项
-  - [ ] 第 2 层：`-init_hw_device` 设备初始化探测
-  - [ ] 第 3 层：真实 3 帧试编码（`-f null -`），并发执行
-  - [ ] 失败分类：DeviceMissing / Capability / Param / Resource / Unknown
-  - [ ] 色调映射管线可用性排序
-  - [ ] 结果缓存与失效（路径 + mtime + 版本 + GPU + 驱动）
-  - [ ] 探测异步进行，推送进度事件
-- [ ] `external.rs`：dovi_tool / hdr10plus_tool / mkvmerge 探测
-- [ ] 环境页接真实数据
-- [ ] 测试
-  - [ ] `-version` / `-buildconf` / `-encoders` 输出解析（fixture）
-  - [ ] 失败分类：用真实采集的报错字符串做表驱动测试
-  - [ ] 本机探测结果与基线一致（集成测试，环境不满足时跳过）
-  - [ ] ffmpeg 不存在 / 版本过低 / 能力受限三种情况
+状态：已完成。桌面应用 `pnpm tauri dev` 的环境页显示真实探测结果。
+
+- [x] `locate.rs`
+  - [x] 用户指定路径（目录或可执行文件本身）
+  - [x] 应用内置目录 `~/.vidforge/ffmpeg/bin`
+  - [x] 当前进程 PATH
+  - [x] Windows 注册表 Machine/User PATH（刚安装时进程环境未刷新，开发期已实际遇到）
+  - [x] Windows 常见安装位置：winget Links 与 Packages / scoop / chocolatey / `C:\ffmpeg`
+  - [x] macOS 常见安装位置：`/opt/homebrew/bin` / `/usr/local/bin` / `/opt/local/bin`
+  - [x] 同时定位 ffprobe，版本不一致时给出提示
+  - [x] 优先选满足最低版本的构建，用户指定的路径总是采用
+- [x] `capability.rs`
+  - [x] 第 1 层：解析 `-version` 版本号（发行版与 git 构建）、构建来源
+  - [x] 第 1 层：解析 `-encoders` / `-filters` / `-bsfs` / `-protocols` / `-hwaccels`，编译开关按组件是否存在判断
+  - [x] 第 1 层：检测 `libx265` 是否含 `dolbyvision` 选项
+  - [x] 第 2 层：`-init_hw_device` 设备初始化探测
+  - [x] 第 3 层：真实 3 帧试编码（`-f null -`），4 路并发
+  - [x] 10bit 试编码前核对编码器自报的像素格式列表（防止被静默换成 8bit）
+  - [x] 失败分类：DeviceMissing / Capability / Param / Resource / NotBuilt / Unknown
+  - [x] 色调映射管线：滤镜、依赖设备与 2 帧试运行三重确认
+  - [x] 结果缓存与失效（路径 + mtime + 大小 + 版本 + GPU + 驱动 + 缓存格式版本）
+  - [x] 探测异步进行，推送进度事件
+- [x] `external.rs`：dovi_tool / hdr10plus_tool / mkvmerge 探测
+- [x] `sysinfo.rs`：显卡与驱动（Windows 读注册表，macOS 用 system_profiler）
+- [x] `config.rs`：`~/.vidforge/config.json` 读写，损坏时备份并回到默认值
+- [x] 前端后端适配层 `src/backend/`（Tauri 与 mock 两种实现）
+- [x] 环境页接真实数据：找不到 / 版本过低的醒目提示、选择目录、下载入口、查找过的位置、探测进度
+- [x] 设置页接真实配置（主题与语言除外）
+- [x] 侧栏环境状态随探测结果变化（含后端调用失败）
+- [x] 有 ffmpeg 却用不了时报"无法运行"（Broken），不误报成"未找到"
+- [x] 真实能力流入前端引擎后，编不了的格式与编码器不再出现在计划里（软编缺失改硬编，整格式缺失换格式并警告，界面置灰）
+- [x] 测试
+  - [x] `-version` / `-buildconf` / `-encoders` / `-filters` 输出解析（本机采集的 3 个真实构建 fixture）
+  - [x] 失败分类：用真实采集的报错字符串做表驱动测试
+  - [x] 本机探测结果与基线一致（`tests/probe_real.rs`，环境不满足时跳过）
+  - [x] ffmpeg 不存在 / 版本过低（gyan 6.0）/ 能力受限（gyan essentials 9.0.1）三种情况，单元测试与真实构建各一遍
+  - [x] 前端：能力 store、mock 后端、环境页三种状态
+  - [x] 桌面应用端到端：`scripts/tauri-cdp.mjs` 通过 WebView2 调试端口驱动窗口，验证真实探测、切换到旧版 ffmpeg 与恢复自动查找
 
 ## 阶段 3：媒体分析
 

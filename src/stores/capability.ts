@@ -1,21 +1,44 @@
 import { create } from "zustand";
-import type { Capabilities } from "@/lib/types";
+import { backend } from "@/backend";
+import { pendingCapabilities } from "@/lib/defaults";
+import type { Capabilities, ProbeProgress } from "@/lib/types";
 import { MOCK_CAPABILITIES } from "@/mock/capabilities";
 
 interface CapabilityState {
   caps: Capabilities;
   probing: boolean;
-  reprobe: () => void;
+  progress?: ProbeProgress;
+  /** 调用后端本身失败（不是"没找到 ffmpeg"，那种情况在 caps.status 里） */
+  error?: string;
+  /** 启动时调用：优先用后端缓存 */
+  load: () => Promise<void>;
+  /** 忽略缓存重新探测 */
+  reprobe: () => Promise<void>;
 }
 
-export const useCapabilities = create<CapabilityState>((set) => ({
-  caps: MOCK_CAPABILITIES,
+async function run(set: (s: Partial<CapabilityState>) => void, force: boolean) {
+  set({ probing: true, error: undefined, progress: undefined });
+  const off = backend.onProbeProgress((progress) => set({ progress }));
+  try {
+    const caps = await backend.getCapabilities(force);
+    set({ caps, probing: false, progress: undefined });
+  } catch (e) {
+    set({ probing: false, progress: undefined, error: e instanceof Error ? e.message : String(e) });
+  } finally {
+    off();
+  }
+}
+
+export const useCapabilities = create<CapabilityState>((set, get) => ({
+  // 浏览器预览直接给出演示数据；桌面应用先用"探测中"占位，探测完成前界面按软编给方案
+  caps: backend.kind === "mock" ? MOCK_CAPABILITIES : pendingCapabilities(),
   probing: false,
-  // 浏览器预览下模拟一次探测过程；接入后端后改为调用 Tauri command
-  reprobe: () => {
-    set({ probing: true });
-    window.setTimeout(() => {
-      set({ probing: false, caps: { ...MOCK_CAPABILITIES, probedAt: new Date().toISOString() } });
-    }, 1400);
+  load: async () => {
+    if (get().probing) return;
+    await run(set, false);
+  },
+  reprobe: async () => {
+    if (get().probing) return;
+    await run(set, true);
   },
 }));
