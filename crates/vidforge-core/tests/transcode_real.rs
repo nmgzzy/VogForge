@@ -151,6 +151,7 @@ fn base_plan(encoder: EncoderId, container: Container) -> TranscodePlan {
         },
         audio: Vec::new(),
         audio_mode: AudioMode::CopyAll,
+        loudnorm: false,
         subtitles: SubtitleMode::None,
         container,
         fidelity: FidelityRequest::default(),
@@ -540,7 +541,7 @@ fn rate_control_modes_behave_as_documented() {
         let mut plan = base_plan(enc, Container::Mkv);
         plan.video.rate_control = RateControl::TwoPass { kbps: 1500 };
         let out = e.path(&format!("2pass-{}.mkv", enc.name()));
-        let first = flatten(&build_first_pass(&src, &plan, &out).expect("两遍编码应有第一遍"));
+        let first = flatten(&build_first_pass(&src, &plan, &e.caps, &out).expect("两遍编码应有第一遍"));
         e.run_command(&first, false);
         let second = flatten(&build_arg_segments(&src, &plan, &e.caps, &out));
         e.run_command(&second, false);

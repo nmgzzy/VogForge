@@ -7,8 +7,10 @@ mod caps;
 mod encoder;
 mod media;
 mod plan;
+mod queue;
 
 pub use caps::*;
 pub use encoder::*;
 pub use media::*;
 pub use plan::*;
+pub use queue::*;

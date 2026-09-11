@@ -344,6 +344,25 @@ pub fn explain(
             Severity::Warn,
         );
     }
+    if plan.loudnorm {
+        let n = plan.audio.iter().filter(|t| t.action == StreamAction::Encode).count();
+        if n == 0 {
+            out.push(
+                "响度",
+                "无法标准化",
+                "音轨都是原样复制，无法调整响度。要标准化，把音频改为“转为兼容格式”或追加兼容轨",
+                Severity::Warn,
+            );
+        } else {
+            out.add(
+                "响度",
+                format!("{} LUFS（两遍）", super::text::plain(super::loudness::TARGET_I)),
+                format!(
+                    "先测量整段响度再线性调整，避免单遍处理开头几秒音量爬升；作用于 {n} 条重新编码的音轨，原样复制的音轨不变"
+                ),
+            );
+        }
+    }
     if plan.audio.iter().any(|t| t.role == TrackRole::Compat && t.channels == Some(2))
         && media.audio.iter().any(|a| a.channels > 2)
     {

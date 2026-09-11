@@ -70,6 +70,12 @@ export const evaluate = (
 
 export const videoHints = (media: MediaInfo): VideoHints | null => call(() => wasm.video_hints(j(media)));
 
+/** 按设置收紧的能力：关了硬件编码时硬件编码器不可用，关了硬件解码时不写硬解参数 */
+export function effectiveCaps(caps: Capabilities, settings: Settings): Capabilities {
+  if (settings.hwEncode && settings.hwDecode) return caps;
+  return call(() => wasm.effective_caps(j(caps), j(settings)));
+}
+
 let meta: EngineMeta | undefined;
 let byId: Map<EncoderId, EncoderMeta> | undefined;
 

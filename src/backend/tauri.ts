@@ -1,9 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Capabilities, ImportProgress, ImportResult, ProbeProgress, Settings } from "@/lib/types";
+import { ask, open } from "@tauri-apps/plugin-dialog";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import type {
+  Capabilities,
+  ImportProgress,
+  ImportResult,
+  JobProgressEvent,
+  ProbeProgress,
+  QueueSnapshot,
+  Settings,
+} from "@/lib/types";
 import type { Backend } from "./types";
 
 /** 与 vidforge-core 的 import::VIDEO_EXTENSIONS 保持一致 */
@@ -54,4 +62,11 @@ export const tauriBackend: Backend = {
     return Array.isArray(r) ? r : typeof r === "string" ? [r] : [];
   },
   openUrl: (url) => openUrl(url),
+  revealPath: (path) => revealItemInDir(path),
+  confirm: (message, title) => ask(message, { title, kind: "warning", okLabel: "确定", cancelLabel: "取消" }),
+  getQueue: () => invoke<QueueSnapshot>("queue_snapshot"),
+  queueAdd: (items) => invoke<string[]>("queue_add", { items }),
+  queueControl: (op) => invoke<void>("queue_control", { op }),
+  onQueueSnapshot: (cb) => subscribe<QueueSnapshot>("queue://snapshot", cb),
+  onQueueProgress: (cb) => subscribe<JobProgressEvent>("queue://progress", cb),
 };

@@ -780,7 +780,7 @@ fn two_pass_commands_share_everything_but_the_pass_number() {
             assert_eq!(first.iter().filter(|a| *a == "-map").count(), 1);
             assert!(!first.iter().any(|a| a.starts_with("-c:a") || a.starts_with("-c:s")));
             // 两遍必须看到完全相同的帧：输入、编码参数、滤镜、帧率逐段一致
-            let segs = build_first_pass(&m, &p, Path::new(OUT)).unwrap();
+            let segs = build_first_pass(&m, &p, &c, Path::new(OUT)).unwrap();
             for label in ["输入", "视频", "滤镜", "帧率"] {
                 let a = segs.iter().find(|x| x.label == label).map(|x| x.args.join(" ")).unwrap_or_default();
                 assert_eq!(a.replace("-pass 1", "-pass 2"), segment(&r, label), "{id}/{enc:?} 的「{label}」两遍不一致");
@@ -883,4 +883,25 @@ fn scenario_recommendations_snapshot() {
         }
         insta::assert_snapshot!(format!("recommendations_{name}"), lines.join("\n"));
     }
+}
+
+#[test]
+fn loudness_normalization_is_explained_and_only_touches_encoded_tracks() {
+    let (m, c) = (media("m-bluray"), caps());
+    // 收藏：全部原样复制，无法标准化
+    let mut p = recommend_plan(&m, Scenario::Collection, &c);
+    p.loudnorm = true;
+    let r = eval(&m, &update_plan(p, &m, &c), &c);
+    assert_eq!(decision(&r, "响度").unwrap().severity, Severity::Warn);
+    assert!(r.loudness_measure.is_none());
+    // 流媒体：E-AC-3 5.1 与兼容立体声两条重编码的轨各测一次
+    let mut p = recommend_plan(&m, Scenario::Streaming, &c);
+    p.loudnorm = true;
+    let r = eval(&m, &update_plan(p, &m, &c), &c);
+    let d = decision(&r, "响度").unwrap();
+    assert_eq!(d.severity, Severity::Info);
+    assert!(d.value.contains("-16 LUFS") && d.reason.contains("2 条"), "{d:?}");
+    assert_eq!(r.loudness_measure.as_ref().map(Vec::len), Some(2));
+    // 默认不开
+    assert!(!recommend_plan(&m, Scenario::Mobile, &c).loudnorm);
 }

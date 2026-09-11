@@ -5,7 +5,7 @@ import { cn } from "@/lib/cn";
 import { CODEC_LABEL, canTonemap, codecAvailable, qualityValue, VENDOR_LABEL } from "@/lib/encoders";
 import { encoderMeta, engineMeta, videoHints } from "@/lib/engine";
 import { channelLabel, formatBitrate, formatFps } from "@/lib/format";
-import { useCapabilities } from "@/stores/capability";
+import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
 import { Badge, Field, Section, Segmented, Select, Switch } from "./ui";
 
@@ -115,7 +115,7 @@ function AudioChips({ media, plan }: { media: MediaInfo; plan: TranscodePlan }) 
 
 export function ParamsPanel({ media, plan, result }: { media: MediaInfo; plan: TranscodePlan; result: PlanResult }) {
   const patch = useProject((s) => s.patchPlan);
-  const caps = useCapabilities((s) => s.caps);
+  const caps = useEngineCaps();
   const v = media.video[0];
   const vp = plan.video;
   const copy = vp.action === "copy";

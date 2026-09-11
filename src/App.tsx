@@ -30,16 +30,25 @@ export default function App() {
   useEffect(() => {
     void useSettings.getState().load();
     void useCapabilities.getState().load();
-    return useCapabilities.subscribe((s, prev) => {
+    const offCaps = useCapabilities.subscribe((s, prev) => {
       if (s.caps !== prev.caps) useProject.getState().refreshPlans();
     });
+    // 硬件编码 / 解码开关会改变可用的编码器，同样要重新整理
+    const offSettings = useSettings.subscribe((s, prev) => {
+      const a = s.settings;
+      const b = prev.settings;
+      if (a.hwEncode !== b.hwEncode || a.hwDecode !== b.hwDecode) useProject.getState().refreshPlans();
+    });
+    return () => {
+      offCaps();
+      offSettings();
+    };
   }, []);
 
-  // 浏览器预览载入示例素材；桌面应用从空列表开始。队列的模拟进度在阶段 6 接入真实执行前两边都要推进
+  // 队列状态来自后端推送；浏览器预览载入示例素材，桌面应用从空列表开始
   useEffect(() => {
     if (backend.kind === "mock" && useProject.getState().files.length === 0) useProject.getState().loadSamples();
-    const id = window.setInterval(() => useQueue.getState().tick(0.5), 500);
-    return () => window.clearInterval(id);
+    return useQueue.getState().init();
   }, []);
 
   return (

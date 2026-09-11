@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Check, ChevronsDownUp, ChevronsUpDown, Copy, ListPlus, SquareTerminal } from "lucide-react";
 import type { MediaInfo, PlanResult, TranscodePlan } from "@/lib/types";
 import { argsToCommand, quoteArg } from "@/lib/format";
-import { useCapabilities } from "@/stores/capability";
+import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
 import { useQueue } from "@/stores/queue";
 import { useUi } from "@/stores/ui";
@@ -26,7 +26,7 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
   const expanded = useUi((s) => s.commandExpanded);
   const toggle = useUi((s) => s.toggleCommand);
   const setView = useUi((s) => s.setView);
-  const caps = useCapabilities((s) => s.caps);
+  const caps = useEngineCaps();
   const enqueue = useQueue((s) => s.enqueue);
   const files = useProject((s) => s.files);
   const plans = useProject((s) => s.plans);
@@ -121,6 +121,19 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
       {expanded && (
         <div className="max-h-[38vh] overflow-y-auto border-t border-line bg-sunken/60 px-4 py-3">
           <div className="selectable grid grid-cols-[52px_1fr] gap-x-3 gap-y-1.5 font-mono text-[11.5px] leading-relaxed">
+            {result.loudnessMeasure?.map((m, k) => (
+              <div key={`m${k}`} className="contents" data-testid="loudness-measure">
+                <span className="pt-px text-right font-sans text-[10.5px] text-subtle">测量响度</span>
+                <span className="text-muted [overflow-wrap:anywhere]">
+                  {m.map((a, j) => (
+                    <span key={j}>
+                      {j > 0 && " "}
+                      <Token a={a} />
+                    </span>
+                  ))}
+                </span>
+              </div>
+            ))}
             {result.firstPass && (
               <div className="contents" data-testid="first-pass">
                 <span className="pt-px text-right font-sans text-[10.5px] text-subtle">第一遍</span>
@@ -149,6 +162,7 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             ))}
           </div>
           <p className="mt-3 font-sans text-[11px] text-subtle">
+            {result.loudnessMeasure && "响度标准化：执行时先测量每条音轨的响度，再把测得的值填进 loudnorm（预览里是单遍写法）。"}
             {result.firstPass && "两遍编码：先运行第一遍（只分析画面、不输出文件），再运行其余命令。"}
             实际执行时写入 <code className="font-mono">.vidforge-part</code> 临时文件，校验通过后才改名为上面的最终文件名。
           </p>

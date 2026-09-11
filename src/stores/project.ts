@@ -4,7 +4,7 @@ import { backend } from "@/backend";
 import type { ImportFailure, ImportProgress, MediaInfo, Scenario, TranscodePlan } from "@/lib/types";
 import { MOCK_MEDIA } from "@/mock/media";
 import { applyFix as engineApplyFix, recommendPlan, suggestScenario, updatePlan } from "@/lib/engine";
-import { useCapabilities } from "./capability";
+import { engineCaps } from "./engine-caps";
 
 export interface ImportReport {
   failures: ImportFailure[];
@@ -45,7 +45,7 @@ interface ProjectState {
   refreshPlans: () => void;
 }
 
-const caps = () => useCapabilities.getState().caps;
+const caps = engineCaps;
 
 /** 导入进行中又加入的路径 */
 const pendingImports: string[] = [];

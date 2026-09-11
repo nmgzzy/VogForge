@@ -10,6 +10,7 @@ pub mod estimate;
 pub mod explain;
 pub mod fidelity;
 pub mod fps;
+pub mod loudness;
 pub mod meta;
 pub mod strategy;
 pub mod text;
@@ -60,7 +61,8 @@ pub fn evaluate(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities, ou
     });
 
     let segments = args::build_arg_segments(media, plan, caps, output);
-    let first_pass = args::build_first_pass(media, plan, output).map(|segs| args::flatten(&segs));
+    let first_pass = args::build_first_pass(media, plan, caps, output).map(|segs| args::flatten(&segs));
+    let measure: Vec<Vec<String>> = loudness::measure_all(media, plan).into_iter().map(|(_, a)| a).collect();
     PlanResult {
         plan: plan.clone(),
         decisions: explain::explain(media, plan, caps, fps_insight.as_ref(), Some(&est.estimate)),
@@ -68,6 +70,7 @@ pub fn evaluate(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities, ou
         args: args::flatten(&segments),
         segments,
         first_pass,
+        loudness_measure: (!measure.is_empty()).then_some(measure),
         estimate: est.estimate,
         fps_insight,
         not_worth_it,

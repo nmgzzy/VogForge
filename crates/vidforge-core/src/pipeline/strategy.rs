@@ -4,9 +4,9 @@
 //! [`normalize_plan`] 在任何字段被修改后把计划修回自洽状态。
 
 use crate::model::{
-    AudioCodec, AudioMode, AudioStream, AudioTrackPlan, Capabilities, Codec, Container, DoviAction, FidelityRequest,
-    FpsPolicy, HdrAction, HdrKind, MediaInfo, QualityTier, RateControl, ResolutionPreset, Scenario, SourceHint,
-    StreamAction, SubtitleMode, TrackRole, TranscodePlan, VideoPlan,
+    AudioCodec, AudioMode, AudioStream, AudioTrackPlan, Capabilities, Codec, Container, DoviAction, EncoderId,
+    FidelityRequest, FpsPolicy, HdrAction, HdrKind, MediaInfo, QualityTier, RateControl, ResolutionPreset, Scenario,
+    SourceHint, StreamAction, SubtitleMode, TrackRole, TranscodePlan, VideoPlan,
 };
 
 use super::container::audio_fits;
@@ -197,6 +197,7 @@ pub fn recommend(media: &MediaInfo, scenario: Scenario, caps: &Capabilities) -> 
         },
         audio: Vec::new(),
         audio_mode: p.audio_mode,
+        loudnorm: false,
         subtitles: p.subtitles,
         container: p.container,
         fidelity: default_fidelity(media, scenario),
@@ -226,10 +227,13 @@ fn primary_audio(media: &MediaInfo) -> Option<&AudioStream> {
 }
 
 /// 按音频策略生成输出音轨
-pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan) -> Vec<AudioTrackPlan> {
+pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities) -> Vec<AudioTrackPlan> {
     let Some(primary) = primary_audio(media) else { return Vec::new() };
     let mut tracks = Vec::new();
-    let stereo_codec = if plan.scenario == Scenario::Smallest { AudioCodec::Opus } else { AudioCodec::Aac };
+    // 最小体积用 Opus；构建里没有 libopus 时退回 AAC（探测完成前按有处理，免得界面来回跳）
+    let opus = caps.status != crate::model::EnvStatus::Ready
+        || caps.build_flags.iter().any(|f| f.name == "libopus" && f.present);
+    let stereo_codec = if plan.scenario == Scenario::Smallest && opus { AudioCodec::Opus } else { AudioCodec::Aac };
     let stereo_rate = match plan.scenario {
         Scenario::Smallest => 96,
         Scenario::Mobile => 160,
@@ -330,6 +334,22 @@ pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan) -> Vec<AudioT
     tracks
 }
 
+/// 换编码器（运行时回退用）：改为手选，质量数值与 preset 换成新编码器的对应值，再整理计划
+pub fn switch_encoder(
+    mut plan: TranscodePlan,
+    encoder: EncoderId,
+    media: &MediaInfo,
+    caps: &Capabilities,
+) -> TranscodePlan {
+    let vp = &mut plan.video;
+    vp.codec = encoder.codec();
+    vp.encoder = encoder;
+    vp.encoder_auto = false;
+    vp.quality_value = quality_value(encoder, vp.quality);
+    vp.preset = default_preset(encoder, plan.scenario).to_string();
+    normalize_plan(plan, media, caps)
+}
+
 /// 让计划保持自洽。任何字段被修改后都应调用一次：编码格式变了要重选编码器、
 /// 编码器变了要换质量数值与 preset、容器变了要重建音轨……
 pub fn normalize_plan(mut plan: TranscodePlan, media: &MediaInfo, caps: &Capabilities) -> TranscodePlan {
@@ -399,6 +419,6 @@ pub fn normalize_plan(mut plan: TranscodePlan, media: &MediaInfo, caps: &Capabil
             vp.tonemap = None;
         }
     }
-    plan.audio = build_audio_tracks(media, &plan);
+    plan.audio = build_audio_tracks(media, &plan, caps);
     plan
 }

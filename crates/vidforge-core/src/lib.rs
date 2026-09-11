@@ -10,5 +10,7 @@ pub mod import;
 pub mod model;
 pub mod output;
 pub mod pipeline;
+pub mod queue;
 pub mod sysinfo;
 pub mod util;
+pub mod verify;

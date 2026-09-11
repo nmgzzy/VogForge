@@ -4,6 +4,11 @@
 export function apply_fix(plan: string, fix_id: string, media: string, caps: string): string;
 
 /**
+ * 决策引擎实际使用的能力：按设置关掉硬件编码 / 硬件解码（需求 F-5.6）
+ */
+export function effective_caps(caps: string, settings: string): string;
+
+/**
  * 界面需要的静态规则表（质量刻度、preset、码率控制支持、标准帧率档）
  */
 export function engine_meta(): string;
@@ -32,6 +37,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly apply_fix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly effective_caps: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly engine_meta: () => [number, number, number, number];
     readonly evaluate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly recommend_plan: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];

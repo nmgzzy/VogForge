@@ -4261,11 +4261,13 @@ name = "vidforge-core"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "ts-rs",
+ "windows-sys 0.61.2",
  "winreg 0.56.0",
 ]
 

@@ -9,12 +9,14 @@ import {
   Clock,
   Copy,
   Cpu,
+  FolderOpen,
   ListVideo,
   Minus,
   Pause,
   Play,
   Plus,
   RotateCcw,
+  SkipForward,
   Trash2,
   TriangleAlert,
   Zap,
@@ -25,7 +27,9 @@ import { cn } from "@/lib/cn";
 import { argsToCommand, formatBytes, formatDuration, formatEta, formatFps } from "@/lib/format";
 import { encoderVendor, isHardware, VENDOR_LABEL } from "@/lib/encoders";
 import { SCENARIOS } from "@/lib/scenarios";
+import { backend } from "@/backend";
 import { useQueue } from "@/stores/queue";
+import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { Badge, Button, Empty, ProgressBar } from "@/components/ui";
 
@@ -34,6 +38,7 @@ const STATUS: Record<JobStatus, { label: string; icon: LucideIcon; cls: string }
   running: { label: "进行中", icon: Play, cls: "text-accent" },
   paused: { label: "已暂停", icon: Pause, cls: "text-warn" },
   done: { label: "已完成", icon: CircleCheck, cls: "text-ok" },
+  skipped: { label: "已跳过", icon: SkipForward, cls: "text-subtle" },
   failed: { label: "失败", icon: CircleX, cls: "text-danger" },
   cancelled: { label: "已取消", icon: Ban, cls: "text-subtle" },
 };
@@ -100,13 +105,13 @@ function JobRow({ job, selected }: { job: Job; selected: boolean }) {
               <Button size="xs" variant="ghost" icon={<ArrowDown className="size-3.5" />} title="下移" onClick={(e) => (e.stopPropagation(), q.move(job.id, 1))} />
             </>
           )}
-          {(job.status === "failed" || job.status === "cancelled") && (
+          {(job.status === "failed" || job.status === "cancelled" || job.status === "skipped") && (
             <Button size="xs" variant="ghost" icon={<RotateCcw className="size-3.5" />} title="重试" onClick={(e) => (e.stopPropagation(), q.retry(job.id))} />
           )}
           {(job.status === "running" || job.status === "paused" || job.status === "queued") && (
             <Button size="xs" variant="ghost" icon={<Ban className="size-3.5" />} title="取消" onClick={(e) => (e.stopPropagation(), q.cancel(job.id))} />
           )}
-          {(job.status === "done" || job.status === "failed" || job.status === "cancelled") && (
+          {(job.status === "done" || job.status === "skipped" || job.status === "failed" || job.status === "cancelled") && (
             <Button size="xs" variant="ghost" icon={<Trash2 className="size-3.5" />} title="从列表移除" onClick={(e) => (e.stopPropagation(), q.remove(job.id))} />
           )}
         </div>
@@ -117,6 +122,7 @@ function JobRow({ job, selected }: { job: Job; selected: boolean }) {
           <ProgressBar value={p.percent} live={job.status === "running"} tone={job.status === "paused" ? "muted" : "accent"} />
           <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11.5px] text-muted tabular">
             <span className="font-semibold text-fg">{p.percent.toFixed(1)}%</span>
+            {p.pass && <span title="两遍编码：第一遍分析，第二遍输出">第 {p.pass}/2 遍</span>}
             <span>
               {formatDuration(p.outTimeSec)} / {formatDuration(job.media.durationSec)}
             </span>
@@ -149,6 +155,11 @@ function JobRow({ job, selected }: { job: Job; selected: boolean }) {
 }
 
 type Tab = "overview" | "report" | "log" | "command";
+
+/** 任务的完整命令；两遍编码是两行 */
+function commandText(job: Job): string {
+  return [job.firstPass, job.args].filter((a): a is string[] => !!a).map((a) => argsToCommand(a)).join("\n");
+}
 
 function JobDetail({ job }: { job: Job }) {
   const [tab, setTab] = useState<Tab>("overview");
@@ -195,7 +206,18 @@ function JobDetail({ job }: { job: Job }) {
                 <span className="text-muted"> · {VENDOR_LABEL[vendor]}</span>
               </dd>
               <dt className="text-subtle">输出</dt>
-              <dd className="selectable font-mono text-[11px] break-all text-muted">{job.outputPath}</dd>
+              <dd className="selectable font-mono text-[11px] break-all text-muted">
+                {job.outputPath}
+                {job.status === "done" && backend.kind === "tauri" && (
+                  <button
+                    className="ml-1.5 inline-flex items-center gap-1 align-middle font-sans text-accent hover:underline"
+                    onClick={() => void backend.revealPath(job.outputPath)}
+                  >
+                    <FolderOpen className="size-3" />
+                    在文件夹中显示
+                  </button>
+                )}
+              </dd>
               {job.startedAt && (
                 <>
                   <dt className="text-subtle">耗时</dt>
@@ -269,15 +291,16 @@ function JobDetail({ job }: { job: Job }) {
 
         {tab === "command" && (
           <div className="space-y-2">
+            {job.firstPass && <p className="text-xs text-muted">两遍编码：先运行第一遍（只分析，不输出文件），再运行第二遍。</p>}
             <pre className="selectable overflow-x-auto rounded-lg bg-sunken p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
-              {argsToCommand(job.args)}
+              {commandText(job)}
             </pre>
             <Button
               size="sm"
               icon={<Copy className="size-3.5" />}
               onClick={async () => {
                 try {
-                  await navigator.clipboard.writeText(argsToCommand(job.args));
+                  await navigator.clipboard.writeText(commandText(job));
                   setCopied(true);
                   window.setTimeout(() => setCopied(false), 1500);
                 } catch {
@@ -315,11 +338,15 @@ function Stepper({ label, value, onChange, icon }: { label: string; value: numbe
 export function QueueView() {
   const jobs = useQueue((s) => s.jobs);
   const selectedId = useQueue((s) => s.selectedJobId);
-  const concurrency = useQueue((s) => s.concurrency);
-  const setConcurrency = useQueue((s) => s.setConcurrency);
-  const paused = useQueue((s) => s.globalPaused);
+  const paused = useQueue((s) => s.paused);
   const setPaused = useQueue((s) => s.setGlobalPaused);
   const clearFinished = useQueue((s) => s.clearFinished);
+  const error = useQueue((s) => s.error);
+  const dismissError = useQueue((s) => s.dismissError);
+  // 并发数是设置项，改了立即作用于后端的调度
+  const cpuSlots = useSettings((s) => s.settings.cpuSlots);
+  const gpuSlots = useSettings((s) => s.settings.gpuSlots);
+  const updateSettings = useSettings((s) => s.update);
   const setView = useUi((s) => s.setView);
   const selected = jobs.find((j) => j.id === selectedId);
   const count = (s: JobStatus) => jobs.filter((j) => j.status === s).length;
@@ -338,8 +365,18 @@ export function QueueView() {
           className="ml-auto flex items-center gap-4"
           title="CPU 软编与 GPU 硬编分别计数：x265 会吃满所有核心，并行两个软编只会互相拖慢；一个软编加一个硬编可以同时跑"
         >
-          <Stepper label="CPU" icon={<Cpu className="size-3.5" />} value={concurrency.cpu} onChange={(n) => setConcurrency("cpu", n)} />
-          <Stepper label="GPU" icon={<Zap className="size-3.5" />} value={concurrency.gpu} onChange={(n) => setConcurrency("gpu", n)} />
+          <Stepper
+            label="CPU"
+            icon={<Cpu className="size-3.5" />}
+            value={cpuSlots}
+            onChange={(n) => void updateSettings({ cpuSlots: Math.min(4, Math.max(1, n)) })}
+          />
+          <Stepper
+            label="GPU"
+            icon={<Zap className="size-3.5" />}
+            value={gpuSlots}
+            onChange={(n) => void updateSettings({ gpuSlots: Math.min(2, Math.max(1, n)) })}
+          />
           <div className="h-5 w-px bg-line" />
           <Button size="sm" icon={paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />} onClick={() => setPaused(!paused)}>
             {paused ? "全部继续" : "全部暂停"}
@@ -369,6 +406,14 @@ export function QueueView() {
             {paused && (
               <div className="mb-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
                 队列已暂停：进行中的任务保持当前进度，排队任务不会开始。
+              </div>
+            )}
+            {error && (
+              <div role="alert" className="mb-3 flex items-center gap-2 rounded-md border border-danger/30 bg-danger/[0.06] px-3 py-2 text-xs text-danger">
+                <span className="flex-1">{error}</span>
+                <button className="text-muted hover:text-fg" onClick={dismissError}>
+                  知道了
+                </button>
               </div>
             )}
             <div className="flex flex-col gap-2">

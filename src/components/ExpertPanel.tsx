@@ -5,7 +5,7 @@ import { cn } from "@/lib/cn";
 import { encoderSupports10bit } from "@/lib/encoders";
 import { encoderMeta, engineMeta } from "@/lib/engine";
 import { formatBitrate } from "@/lib/format";
-import { useCapabilities } from "@/stores/capability";
+import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
 import { Field, Segmented, Select } from "./ui";
 
@@ -98,7 +98,7 @@ function MbpsInput({ kbps, onCommit, label }: { kbps: number; onCommit: (kbps: n
 export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: PlanResult }) {
   const [open, setOpen] = useState(false);
   const patch = useProject((s) => s.patchPlan);
-  const caps = useCapabilities((s) => s.caps);
+  const caps = useEngineCaps();
   const vp = plan.video;
   const meta = encoderMeta(vp.encoder);
   const copy = vp.action === "copy";
@@ -112,8 +112,10 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
         kind === "quality" ? { kind } : { kind, kbps: startingKbps(kind, d.video.rateControl, result.estimate.videoBps) };
     });
 
+  const encodedAudio = plan.audio.some((t) => t.action === "encode");
   const summary = [
     rateControlSummary(rc),
+    plan.loudnorm ? "响度 -16 LUFS" : undefined,
     `${vp.bitDepth}bit`,
     { all: "全部字幕", text_only: "仅文本字幕", none: "不保留字幕" }[plan.subtitles],
     `preset ${vp.preset}`,
@@ -160,6 +162,27 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
               onChange={(s) =>
                 patch((p) => {
                   p.subtitles = s;
+                })
+              }
+            />
+          </Field>
+
+          <Field label="响度" hint="两遍测量，只作用于重新编码的音轨">
+            <Segmented<"off" | "on">
+              className="w-full"
+              value={plan.loudnorm ? "on" : "off"}
+              options={[
+                { value: "off", label: "不调整" },
+                {
+                  value: "on",
+                  label: "标准化 -16 LUFS",
+                  disabled: !encodedAudio && !plan.loudnorm,
+                  title: encodedAudio ? "先测量整段响度再线性调整，适合音量忽大忽小的素材" : "音轨都是原样复制，无法调整响度",
+                },
+              ]}
+              onChange={(v) =>
+                patch((d) => {
+                  d.loudnorm = v === "on";
                 })
               }
             />

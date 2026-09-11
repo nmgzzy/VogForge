@@ -250,6 +250,15 @@ pub enum AudioCodec {
 }
 
 impl AudioCodec {
+    /// ffmpeg 里使用的编码器。原生 `opus` 编码器是实验性的，不加 `-strict -2` 直接失败，一律用 libopus
+    pub fn encoder(self) -> &'static str {
+        match self {
+            AudioCodec::Opus => "libopus",
+            other => other.name(),
+        }
+    }
+
+    /// 编码格式名（与 ffprobe 报告的 codec_name 一致）
     pub fn name(self) -> &'static str {
         match self {
             AudioCodec::Aac => "aac",
@@ -360,6 +369,9 @@ pub struct TranscodePlan {
     pub video: VideoPlan,
     pub audio: Vec<AudioTrackPlan>,
     pub audio_mode: AudioMode,
+    /// 响度标准化（两遍 loudnorm，-16 LUFS），只作用于重新编码的音轨
+    #[serde(default)]
+    pub loudnorm: bool,
     pub subtitles: SubtitleMode,
     pub container: Container,
     pub fidelity: FidelityRequest,
@@ -462,6 +474,9 @@ pub struct PlanResult {
     /// 两遍编码的第一遍命令（只分析、不输出文件）；其余模式为空
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_pass: Option<Vec<String>>,
+    /// 响度标准化的测量命令，每条要标准化的音轨一条；执行时先跑它们，再把测得的值带进主命令
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loudness_measure: Option<Vec<Vec<String>>>,
     pub estimate: Estimate,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps_insight: Option<FpsInsight>,

@@ -2,11 +2,16 @@ import { DEFAULT_SETTINGS } from "@/lib/defaults";
 import type { ImportProgress, ImportResult, ProbeProgress, Settings } from "@/lib/types";
 import { MOCK_CAPABILITIES } from "@/mock/capabilities";
 import { MOCK_MEDIA } from "@/mock/media";
+import { seedJobs } from "@/mock/queue";
+import { MockQueue } from "./mock-queue";
 import type { Backend } from "./types";
 
 const probeListeners = new Set<(p: ProbeProgress) => void>();
 const importListeners = new Set<(p: ImportProgress) => void>();
 let settings: Settings = { ...DEFAULT_SETTINGS };
+
+/** 浏览器预览的模拟队列；测试里直接调它的 tick 推进 */
+export const mockQueue = new MockQueue(() => settings, seedJobs);
 
 const STAGES = ["检测编译能力", "初始化硬件设备", "试编码", "检测色调映射"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -54,4 +59,11 @@ export const mockBackend: Backend = {
   openUrl: async (url) => {
     window.open(url, "_blank", "noopener");
   },
+  revealPath: async () => undefined,
+  confirm: async (message) => window.confirm(message),
+  getQueue: async () => mockQueue.snapshot(),
+  queueAdd: async (items) => mockQueue.add(items),
+  queueControl: async (op) => mockQueue.control(op),
+  onQueueSnapshot: (cb) => mockQueue.onSnapshot(cb),
+  onQueueProgress: (cb) => mockQueue.onProgress(cb),
 };

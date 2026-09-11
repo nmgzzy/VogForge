@@ -73,3 +73,10 @@ pub fn video_hints(media: &str) -> Result<String, JsError> {
     let m: MediaInfo = parse("媒体信息", media)?;
     json(&pipeline::meta::video_hints(&m))
 }
+
+/// 决策引擎实际使用的能力：按设置关掉硬件编码 / 硬件解码（需求 F-5.6）
+#[wasm_bindgen]
+pub fn effective_caps(caps: &str, settings: &str) -> Result<String, JsError> {
+    let (c, s): (Capabilities, Settings) = (parse("环境能力", caps)?, parse("设置", settings)?);
+    json(&c.restricted(s.hw_encode, s.hw_decode, &[]))
+}

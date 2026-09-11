@@ -406,6 +406,8 @@ macOS 上真正的硬件色调映射只存在于 jellyfin-ffmpeg 的 patch（`to
 
 默认策略：MP4 用 `aac` 2.0 加可选 `eac3` 5.1；MKV 用 `libopus` 或 `aac` 加 `eac3`。
 
+**Opus 必须写 `libopus` [实测]**（阶段 6 批量转码时发现）。`-c:a opus` 选中的是 ffmpeg 自带的原生 Opus 编码器，它是实验性的，不加 `-strict -2` 直接失败：`The encoder 'opus' is experimental but experimental codecs are not enabled`，随后 `Could not open encoder before EOF`，立体声、5.1、pan 降混后都一样。`-c:a libopus` 正常。构建里没有 libopus 时（编译开关里看得到）退回 AAC。
+
 ### 6.4 多声道降混
 
 简单 `-ac 2` 会让对白偏小。推荐显式 `pan` 矩阵（中置提升约 3dB）加限幅：
@@ -445,6 +447,15 @@ measured_I=-23.7:measured_TP=-5.2:measured_LRA=14.1:measured_thresh=-34.2:offset
 | 手机/耳机，对白优先 | `I=-16:TP=-1.5:LRA=11` |
 
 不要用 `dynaudnorm` 默认参数处理电影。它会压缩动态范围，在对白与爆炸交替时产生明显的"呼吸感"。
+
+阶段 6 实测（ffmpeg 9.0.1，-25 dB / -30 dB 正弦波）：
+
+- 第一遍的 JSON 打在 stderr（`-loglevel info`），值全是字符串，如 `"input_i" : "-46.75"`；取最后一个花括号块解析。
+- **loudnorm 的输出固定是 192 kHz。** 不处理时 AAC 被自动定到 96 kHz、FLAC 直接写 192 kHz。第二遍必须在 loudnorm 后面接 `aresample=<目标采样率>`。
+- 多声道降为立体声时，`pan` 放在 loudnorm 之前，测量与编码两遍都要带，否则测的不是最终信号。
+- 两遍之后输出实测 -16 ± 0.5 LUFS。
+
+VidForge 的写法：第二遍 `…,loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=…:measured_TP=…:measured_LRA=…:measured_thresh=…:offset=…:linear=true,aresample=48000`，只作用于重新编码的音轨（原样复制的轨加不了滤镜）。
 
 **[待验]** swresample 的 `center_mixlev` / `surround_mixlev` 文档写的是 dB（区间 [-32,32]），但常见用法传线性系数（如 1.4125）。实现前需实测确认。
 
@@ -731,3 +742,13 @@ MOV 与 MP4 同属一族，音频白名单不同：AAC / AC-3 / E-AC-3 / ALAC / 
 **流级色彩字段可能是 unknown，而帧里有值。** 用 x265 的 `-x265-params colorprim=...:transfer=...` 编码的 MKV，色彩只写在 HEVC 码流的 VUI 里，容器没有 Colour 元素，ffprobe `-show_streams` 里 `color_transfer` 与 `color_primaries` 缺失；解码出的首帧则是 `smpte2084` / `bt2020`。媒体分析只看流级字段会把这种 HDR10 片源误判成 SDR，所以分析时要读首帧的 `color_*` 字段兜底（设计文档 5.2 节的首帧采样顺带完成）。
 
 **旋转写在 Display Matrix 里。** 手机竖拍视频的编码尺寸仍是横向（如 1920×1080），`side_data_list` 里的 `Display Matrix` 带 `"rotation": -90`。转码时 ffmpeg 默认自动旋转，流复制时保留这条 side data。
+
+## 13. 进程管理（阶段 6 实测）
+
+以下均为 **[实测]**，Windows 11，ffmpeg 9.0.1。
+
+**应用被强杀时 ffmpeg 不会跟着退出。** Windows 上结束父进程不影响子进程：用任务管理器或 `taskkill /F` 结束应用后，正在转码的 ffmpeg 继续运行、继续写临时文件，下次启动恢复队列时还可能因为文件被占用而删不掉。解决办法是把每个 ffmpeg 放进一个设置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象：应用退出、崩溃或被强杀时系统关闭作业句柄，其中的进程随之结束。实测强杀应用后 ffmpeg 立即消失。Linux 用 `prctl(PR_SET_PDEATHSIG, SIGKILL)`；macOS 没有对应机制，要另想办法（阶段 7）。
+
+**暂停可以用挂起线程实现。** ffmpeg 没有暂停命令（`-nostdin` 下也不能发 `q`）。逐个 `SuspendThread` 挂起进程的全部线程后，`-progress` 输出停止、编码不再推进；`ResumeThread` 后接着跑，输出正常。类 Unix 用 `SIGSTOP` / `SIGCONT`。挂起的进程仍占着内存与 GPU 会话，所以暂停的任务照样占并发票。
+
+**取消直接结束进程即可。** 输出写在 `.vidforge-part` 临时文件里，结束进程后删掉它（和两遍编码的 `.2pass-*.log` 统计文件）就不留痕迹；挂起中的进程也能直接结束。

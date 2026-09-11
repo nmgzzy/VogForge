@@ -35,6 +35,35 @@ export function apply_fix(plan, fix_id, media, caps) {
 }
 
 /**
+ * 决策引擎实际使用的能力：按设置关掉硬件编码 / 硬件解码（需求 F-5.6）
+ * @param {string} caps
+ * @param {string} settings
+ * @returns {string}
+ */
+export function effective_caps(caps, settings) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(caps, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(settings, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.effective_caps(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * 界面需要的静态规则表（质量刻度、preset、码率控制支持、标准帧率档）
  * @returns {string}
  */

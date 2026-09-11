@@ -14,7 +14,11 @@ segments: Array<ArgSegment>,
 /**
  * 两遍编码的第一遍命令（只分析、不输出文件）；其余模式为空
  */
-firstPass?: Array<string>, estimate: Estimate, fpsInsight?: FpsInsight, 
+firstPass?: Array<string>, 
+/**
+ * 响度标准化的测量命令，每条要标准化的音轨一条；执行时先跑它们，再把测得的值带进主命令
+ */
+loudnessMeasure?: Array<Array<string>>, estimate: Estimate, fpsInsight?: FpsInsight, 
 /**
  * 源码率已低于目标时的"不建议转码"提示
  */

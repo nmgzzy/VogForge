@@ -7,4 +7,8 @@ import type { Scenario } from "./Scenario";
 import type { SubtitleMode } from "./SubtitleMode";
 import type { VideoPlan } from "./VideoPlan";
 
-export type TranscodePlan = { scenario: Scenario, video: VideoPlan, audio: Array<AudioTrackPlan>, audioMode: AudioMode, subtitles: SubtitleMode, container: Container, fidelity: FidelityRequest, };
+export type TranscodePlan = { scenario: Scenario, video: VideoPlan, audio: Array<AudioTrackPlan>, audioMode: AudioMode, 
+/**
+ * 响度标准化（两遍 loudnorm，-16 LUFS），只作用于重新编码的音轨
+ */
+loudnorm: boolean, subtitles: SubtitleMode, container: Container, fidelity: FidelityRequest, };

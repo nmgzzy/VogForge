@@ -253,6 +253,25 @@ impl Capabilities {
     pub fn can_transcode(&self) -> bool {
         self.status == EnvStatus::Ready
     }
+
+    /// 决策引擎实际使用的能力（需求 F-5.6、设计文档 4.2）：设置里关了硬件编码时硬件编码器一律不可用，
+    /// 关了硬件解码时不列硬解方式；本次会话因设备缺失而禁用的厂商同样不可用。环境页展示的仍是原始探测结果
+    pub fn restricted(&self, hw_encode: bool, hw_decode: bool, disabled: &[Vendor]) -> Capabilities {
+        let mut c = self.clone();
+        for e in c.encoders.iter_mut().filter(|e| e.id.is_hardware() && e.usable) {
+            if !hw_encode {
+                e.usable = false;
+                e.error = Some("设置里关闭了硬件编码".into());
+            } else if disabled.contains(&e.vendor) {
+                e.usable = false;
+                e.error = Some("本次运行中该厂商的设备不可用，已停用".into());
+            }
+        }
+        if !hw_decode {
+            c.hwaccels.clear();
+        }
+        c
+    }
 }
 
 /// 探测进度事件

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { FileVideo } from "lucide-react";
 import { backend } from "@/backend";
 import { evaluate } from "@/lib/engine";
-import { useCapabilities } from "@/stores/capability";
+import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject, useSelected } from "@/stores/project";
 import { useSettings } from "@/stores/settings";
 import { CommandBar } from "@/components/CommandBar";
@@ -17,7 +17,7 @@ import { Button, Empty } from "@/components/ui";
 
 export function TranscodeView() {
   const { media, plan } = useSelected();
-  const caps = useCapabilities((s) => s.caps);
+  const caps = useEngineCaps();
   const settings = useSettings((s) => s.settings);
   const loadSamples = useProject((s) => s.loadSamples);
   // 输出路径随设置里的输出目录与命名模板变化

@@ -6,7 +6,7 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 
 ## 当前阶段
 
-阶段 0–5 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 决策引擎（`crates/vidforge-core/src/pipeline/`：场景推荐、保真度求解、命令构建、预估、码率控制）都已接通。引擎编译成 WebAssembly 驱动界面，没有第二份 TS 实现。下一步是阶段 6 执行与队列（队列页目前仍是 `src/mock/queue.ts` 的模拟）。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
+阶段 0–6 已完成：Cargo workspace、Tauri 外壳、ffmpeg 定位与三层能力探测、ffprobe 媒体分析与文件导入、Rust 决策引擎（`crates/vidforge-core/src/pipeline/`：场景推荐、保真度求解、命令构建、预估、码率控制、响度）、真实转码队列（`crates/vidforge-core/src/queue/`）都已接通。引擎编译成 WebAssembly 驱动界面，没有第二份 TS 实现。下一步是阶段 7：保真度报告、引导下载、i18n、打磨与 macOS。阶段划分与验收项见 `docs/plan.md`，逐项进度见 `docs/todo.md`。
 
 **改引擎规则后的流程。** 先让 Rust 测试反映新规则：有意的产出变化用 `UPDATE_GOLDEN=1 cargo test -p vidforge-core --test golden_engine` 重写 `tests/fixtures/golden/engine.json`，`INSTA_UPDATE=always cargo test -p vidforge-core` 重写快照，逐个审阅 diff。然后 `pnpm wasm` 重新生成 `src/wasm/pkg/` 并一起提交；忘了这一步 `src/lib/engine.golden.test.ts` 会失败（它用 wasm 重算回归样本）。
 
@@ -37,9 +37,11 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 
 全部业务逻辑放在纯 Rust 库 `crates/vidforge-core`，不依赖 Tauri；`src-tauri` 只做命令注册与事件转发（`src-tauri/src/commands.rs`）。决策模块（命令构建、策略、保真度求解）是纯函数，环境信息一律通过 `model::Capabilities` 传入。与外部进程打交道的代码经过 `ffmpeg::exec::Runner` trait，定位还经过 `ffmpeg::locate::Env` trait，单元测试用假实现，配合 `tests/fixtures/ffmpeg/` 下本机采集的真实 ffmpeg 输出。
 
-前后端共享的类型写在 `vidforge-core/src/model/`，用 ts-rs 导出到 `src/bindings/`（生成物要提交，勿手改）。约定：结构体 `#[serde(rename_all = "camelCase")]`，可选字段加 `#[ts(optional_fields)]` 与 `skip_serializing_if`，对应 TS 的 `field?: T`；u64 导出为 `number`（见 `.cargo/config.toml`）。`src/lib/types.ts` 对已迁移的类型只做 re-export，其余类型随阶段迁移。
+前后端共享的类型写在 `vidforge-core/src/model/`，用 ts-rs 导出到 `src/bindings/`（生成物要提交，勿手改）。约定：结构体 `#[serde(rename_all = "camelCase")]`，可选字段加 `#[ts(optional_fields)]` 与 `skip_serializing_if`，对应 TS 的 `field?: T`；u64 导出为 `number`（见 `.cargo/config.toml`）。`src/lib/types.ts` 只做 re-export，前端不再手写共享类型。
 
 前端通过 `src/backend/` 的 `Backend` 接口访问后端：Tauri 窗口里是 `invoke` + 事件（`tauri.ts`），浏览器预览与 vitest 里是 `mock.ts`，由 `isTauri()` 自动选择。store 只依赖这个接口。
+
+**队列。** `vidforge-core/src/queue/`：`mod.rs` 是调度（一个调度线程按 CPU / GPU / IO 票挑任务，每个任务一个工作线程）与界面操作（`QueueOp`），`worker.rs` 执行一个任务（定输出位置 → 重新生成命令 → 硬件预检 → 响度测量 → 一遍或两遍编码 → 改名 → 校验），`fallback.rs` 是失败后的纯函数决策，`process.rs` 管 ffmpeg 进程（挂起、结束、作业对象），`files.rs` 管临时文件与冲突，`persist.rs` 管 `queue.json`。外部进程、时钟、事件推送都经 trait 注入（`Tools` / `Clock` / `EventSink`），`tests/queue_sim.rs` 用假实现测调度规则。前端 `useQueue` 只镜像后端推来的快照与进度；浏览器预览的模拟队列在 `src/backend/mock-queue.ts`，规则改了两边一起改。
 
 决策引擎的入口在 `vidforge-core/src/pipeline/mod.rs`，`crates/vidforge-wasm` 把它们导出成 JSON 字符串进出的 wasm 函数，前端经 `src/lib/engine.ts` 同步调用（设计文档 6.5）：
 
@@ -72,6 +74,8 @@ cargo fmt --all                                 # rustfmt.toml：max_width 120
 - 停掉后台的 `pnpm tauri dev` 只会结束外层 shell，vite（占 1420）、`cargo run` 与 `vidforge.exe` 会留下来，要按进程号结束。WebView2 按应用共用数据目录，已有一个实例在跑时，第二个实例（例如另一个调试端口）拿不到调试端口。
 - 决策引擎的 wasm 需要 CSP `script-src 'wasm-unsafe-eval'`（`tauri.conf.json`）。开发模式不下发 CSP，只有嵌入资源的构建（`pnpm tauri build`）才会暴露这类问题。
 - 引擎代码（会编译成 wasm）里不要用 `std::path` 解析媒体路径：wasm 上它只认 `/`，`D:\素材\a.mov` 会变成没有父目录的文件名。用 `output.rs` 里按字符串处理、两种分隔符都认的函数。
+- 桌面端到端自测时队列写的是真实的 `~/.vidforge/queue.json`，测完用"清除已完成"（或 `queue_control` 的 `clear_finished`）把测试任务清掉。
+- `-c:a opus` 是 ffmpeg 自带的实验性编码器，不加 `-strict -2` 直接失败；音频编码器名走 `AudioCodec::encoder()`（Opus → libopus），`name()` 是 ffprobe 报的格式名。
 - `wasm-bindgen` 依赖锁定为 `=0.2.128`，必须与本机 `wasm-bindgen-cli` 版本一致，否则 `pnpm wasm` 生成的胶水代码与 wasm 不匹配。
 - 复制命令用的 `quoteArg`（`src/lib/format.ts`）默认面向 PowerShell：逗号是数组运算符、行首 `@` 是 splatting，所以 `SAFE_ARG` 刻意不含这两个字符，不要放宽。
 - 用户填写的附加参数用 `splitArgs` 解析，支持引号，不要改回按空格拆分。

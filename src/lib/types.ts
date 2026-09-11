@@ -1,13 +1,9 @@
 /**
  * 前后端共享的核心类型。
  *
- * 结构与 docs/design.md 第 3 章对齐。已迁到 Rust 的类型由 ts-rs 生成到 src/bindings/
- * （改 Rust 模型后运行 `pnpm bindings` 重新生成），这里只做 re-export；队列相关类型在阶段 6 迁移。
+ * 结构与 docs/design.md 第 3 章对齐。全部由 ts-rs 从 Rust 模型生成到 src/bindings/
+ * （改 Rust 模型后运行 `pnpm bindings` 重新生成），这里只做 re-export。
  */
-
-import type { EncoderId } from "@/bindings/EncoderId";
-import type { MediaInfo } from "@/bindings/MediaInfo";
-import type { TranscodePlan } from "@/bindings/TranscodePlan";
 
 // ───────────────────────── 环境与设置 ─────────────────────────
 export type { AfterAction } from "@/bindings/AfterAction";
@@ -82,47 +78,14 @@ export type { QualityValues } from "@/bindings/QualityValues";
 export type { StandardFpsMeta } from "@/bindings/StandardFpsMeta";
 export type { VideoHints } from "@/bindings/VideoHints";
 
-// ───────────────────────── 队列（阶段 6 迁到 Rust） ─────────────────────────
-
-export type JobStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
-
-export interface JobProgress {
-  percent: number;
-  outTimeSec: number;
-  speed: number;
-  fps: number;
-  sizeBytes: number;
-  etaSec?: number;
-  dupFrames: number;
-  dropFrames: number;
-}
-
-export interface JobEvent {
-  at: number;
-  level: "info" | "warn" | "error";
-  message: string;
-}
-
-export interface ReportItem {
-  label: string;
-  expected: string;
-  actual: string;
-  ok: boolean;
-}
-
-export interface Job {
-  id: string;
-  media: MediaInfo;
-  plan: TranscodePlan;
-  args: string[];
-  outputPath: string;
-  status: JobStatus;
-  progress: JobProgress;
-  encoderUsed: EncoderId;
-  events: JobEvent[];
-  log: string[];
-  report?: ReportItem[];
-  startedAt?: number;
-  finishedAt?: number;
-  outputSize?: number;
-}
+// ───────────────────────── 队列 ─────────────────────────
+export type { EventLevel } from "@/bindings/EventLevel";
+export type { Job } from "@/bindings/Job";
+export type { JobEvent } from "@/bindings/JobEvent";
+export type { JobProgress } from "@/bindings/JobProgress";
+export type { JobProgressEvent } from "@/bindings/JobProgressEvent";
+export type { JobStatus } from "@/bindings/JobStatus";
+export type { QueueItem } from "@/bindings/QueueItem";
+export type { QueueOp } from "@/bindings/QueueOp";
+export type { QueueSnapshot } from "@/bindings/QueueSnapshot";
+export type { ReportItem } from "@/bindings/ReportItem";

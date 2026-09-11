@@ -68,6 +68,18 @@ export function SettingsView() {
   const reprobe = useCapabilities((st) => st.reprobe);
   const canPick = backend.kind === "tauri";
 
+  // 覆盖会直接替换已有文件，无法撤销：选的时候先让用户明确同意（需求 F-6.7）
+  const chooseConflict = async (conflict: ConflictPolicy) => {
+    if (conflict === "overwrite") {
+      const ok = await backend.confirm(
+        "选择“覆盖”后，输出位置已有的同名文件会被直接替换，无法撤销。源文件永远不会被覆盖。确定使用覆盖吗？",
+        "覆盖同名文件",
+      );
+      if (!ok) return;
+    }
+    await update({ conflict });
+  };
+
   const pickOutput = async () => {
     const dir = await backend.pickDirectory("选择输出目录");
     if (dir) await update({ outputDir: dir });
@@ -105,11 +117,11 @@ export function SettingsView() {
             <Row label="保留源目录结构" hint="批量导入文件夹时，在输出目录中重建相同的子目录">
               <Switch checked={s.keepTree} onChange={(keepTree) => void update({ keepTree })} />
             </Row>
-            <Row label="同名文件" hint="覆盖前会再次确认">
+            <Row label="同名文件" hint="选择覆盖时会先确认；源文件永远不会被覆盖">
               <Segmented<ConflictPolicy>
                 className="w-full"
                 value={s.conflict}
-                onChange={(conflict) => void update({ conflict })}
+                onChange={(conflict) => void chooseConflict(conflict)}
                 options={[
                   { value: "skip", label: "跳过" },
                   { value: "rename", label: "自动加序号" },

@@ -10,7 +10,8 @@ use vidforge_core::model::{
     ArgSegment, Capabilities, Container, DoviAction, EncoderId, EncoderProbe, FpsPolicy, MediaInfo, RateControl,
     StreamAction, TranscodePlan, Vendor,
 };
-use vidforge_core::pipeline::args::{build_arg_segments, build_first_pass, flatten};
+use vidforge_core::pipeline::args::{build_arg_segments, build_arg_segments_measured, build_first_pass, flatten};
+use vidforge_core::pipeline::loudness::{LoudnessMeasure, measure_all};
 use vidforge_core::pipeline::update_plan;
 
 #[derive(Deserialize)]
@@ -124,6 +125,8 @@ fn facts_hold_for_every_case() {
         }
         // 2.5：AV1 不用 libaom
         assert!(!a.iter().any(|x| x == "libaom-av1"), "{name}: 出现 libaom");
+        // 6.3：原生 opus 编码器是实验性的，不加 -strict -2 直接失败
+        assert!(!a.windows(2).any(|w| w[0].starts_with("-c:a") && w[1] == "opus"), "{name}: 用了实验性的 opus 编码器");
         // 6.4：pan 降混的那条轨不再出现 -ac
         let audio = b.segs.iter().find(|s| s.label == "音频").map(|s| s.args.clone()).unwrap_or_default();
         for (idx, _) in c.plan.audio.iter().enumerate() {
@@ -238,7 +241,7 @@ fn rate_control_facts_hold_for_every_case() {
                 }
             }
             // 两遍只给软件编码器；第一遍与第二遍用同一个统计文件前缀
-            let first = build_first_pass(&c.media, &plan, out);
+            let first = build_first_pass(&c.media, &plan, &caps, out);
             if let RateControl::TwoPass { .. } = vp.rate_control {
                 assert!(!vp.encoder.is_hardware(), "{name}: 两遍用了硬件编码器");
                 let first = flatten(&first.unwrap());
@@ -287,4 +290,51 @@ fn rate_control_matrix_snapshot() {
         }
     }
     insta::assert_snapshot!("rate_control_matrix", lines.join("\n"));
+}
+
+#[test]
+fn loudness_normalization_facts_hold_for_every_case() {
+    // 技术事实文档 6.5：两遍 loudnorm；输出固定 192 kHz，后面必须 aresample；复制的音轨无法加滤镜
+    let g = golden();
+    let (mut encoded, mut copied) = (0, 0);
+    let m = LoudnessMeasure { input_i: -27.5, input_tp: -4.4, input_lra: 8.1, input_thresh: -38.2, target_offset: 0.6 };
+    for c in &g.cases {
+        let caps = &g.caps[&c.caps];
+        let mut plan = c.plan.clone();
+        plan.loudnorm = true;
+        let plan = update_plan(plan, &c.media, caps);
+        let out = Path::new(&c.output);
+        let measure = measure_all(&c.media, &plan);
+        let all: Vec<(usize, LoudnessMeasure)> = measure.iter().map(|(i, _)| (*i, m)).collect();
+        let single = build_arg_segments(&c.media, &plan, caps, out);
+        let two = build_arg_segments_measured(&c.media, &plan, caps, out, &all);
+        let filter_of = |segs: &[ArgSegment], i: usize| {
+            let a = &segs.iter().find(|s| s.label == "音频").unwrap().args;
+            a.iter().position(|x| x == &format!("-filter:a:{i}")).map(|p| a[p + 1].clone())
+        };
+        for (i, t) in plan.audio.iter().enumerate() {
+            let name = format!("{} 第 {i} 条音轨", c.name);
+            if t.action == StreamAction::Copy {
+                copied += 1;
+                assert!(filter_of(&two, i).is_none_or(|f| !f.contains("loudnorm")), "{name}：复制的音轨不能加滤镜");
+                assert!(!measure.iter().any(|(k, _)| *k == i), "{name}：复制的音轨不需要测量");
+                continue;
+            }
+            encoded += 1;
+            let f = filter_of(&two, i).unwrap_or_else(|| panic!("{name}：缺少 loudnorm"));
+            assert!(f.contains("measured_I=-27.5") && f.contains("linear=true"), "{name}：{f}");
+            let after = f.split("loudnorm=").nth(1).unwrap();
+            assert!(after.contains(",aresample="), "{name}：loudnorm 后面没有降采样：{f}");
+            // 没有测量值时是可以直接运行的单遍写法
+            let s = filter_of(&single, i).unwrap();
+            assert!(s.contains("loudnorm=I=-16:TP=-1.5:LRA=11") && !s.contains("measured_"), "{name}：{s}");
+            // 测量与编码两遍看到同样的信号：降混的 pan 在两边都在 loudnorm 之前
+            let (_, cmd) = measure.iter().find(|(k, _)| *k == i).unwrap_or_else(|| panic!("{name}：缺少测量命令"));
+            let mf = &cmd[cmd.iter().position(|x| x == "-filter:a").unwrap() + 1];
+            assert_eq!(mf.contains("pan="), f.contains("pan="), "{name}：测量与编码的降混不一致");
+            assert!(mf.ends_with("print_format=json") && cmd.ends_with(&["-f".into(), "null".into(), "-".into()]));
+            assert!(has(cmd, &["-map", &format!("0:{}", t.source_index)]), "{name}：测量的不是这条源音轨");
+        }
+    }
+    assert!(encoded > 50 && copied > 50, "覆盖不足：重编码 {encoded} 条、复制 {copied} 条");
 }

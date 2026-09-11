@@ -1,6 +1,6 @@
 /**
- * 队列演示数据与进度模拟。仅用于浏览器预览：
- * 接入后端后，进度来自 ffmpeg -progress 的块协议解析，由 Tauri 事件推送。
+ * 浏览器预览的队列演示数据：预置任务、模拟速度与模拟的校验报告。模拟推进在 src/backend/mock-queue.ts；
+ * 桌面应用的队列在 crates/vidforge-core/src/queue，进度来自 ffmpeg -progress 的块协议解析。
  */
 import type { FidelityKind, Job, JobEvent, MediaInfo, ReportItem, Settings, TranscodePlan } from "@/lib/types";
 import { DEFAULT_SETTINGS } from "@/lib/defaults";
@@ -29,12 +29,14 @@ export function makeJob(
     media: m,
     plan,
     args: r.args,
+    firstPass: r.firstPass,
     outputPath: r.args[r.args.length - 1]!,
     status: "queued",
     progress: { percent: 0, outTimeSec: 0, speed: 0, fps: 0, sizeBytes: 0, dupFrames: 0, dropFrames: 0 },
     encoderUsed: plan.video.encoder,
-    events: [ev(0, "info", "已加入队列")],
+    events: [{ at: Date.now(), level: "info", message: "已加入队列" }],
     log: [],
+    attempts: 0,
   };
 }
 
@@ -143,6 +145,7 @@ export function seedJobs(): Job[] {
   const doneSize = 243_600_000;
   Object.assign(done, {
     status: "done",
+    attempts: 1,
     progress: { ...done.progress, percent: 100, outTimeSec: iphone.durationSec, speed: 0.31, fps: 8.97, sizeBytes: doneSize },
     outputSize: doneSize,
     startedAt: T0 - 460_000,
@@ -151,9 +154,8 @@ export function seedJobs(): Job[] {
     events: [
       ev(-470, "info", "已加入队列"),
       ev(-462, "info", "预检通过：libx265 以当前参数试编码 3 帧成功"),
-      ev(-460, "info", "开始转码，写入临时文件 IMG_4521_2160p_hevc.mkv.vidforge-part"),
-      ev(-19, "info", "编码完成，正在校验输出"),
-      ev(-18, "info", `校验通过，已改名为最终文件。${formatBytes(iphone.sizeBytes)} → ${formatBytes(doneSize)}`),
+      ev(-460, "info", "开始转码"),
+      ev(-18, "info", `完成，校验通过：${formatBytes(iphone.sizeBytes)} → ${formatBytes(doneSize)}`),
     ],
   } satisfies Partial<Job>);
   done.report = buildReport(done);
@@ -163,6 +165,7 @@ export function seedJobs(): Job[] {
   const running = makeJob(drone, recommendPlan(drone, "archive", caps), DEFAULT_SETTINGS, "job-run-cpu");
   Object.assign(running, {
     status: "running",
+    attempts: 1,
     startedAt: T0 - 95_000,
     progress: { percent: 37, outTimeSec: drone.durationSec * 0.37, speed: 0.34, fps: 20.4, sizeBytes: 402_000_000, dupFrames: 0, dropFrames: 0 },
     events: [
@@ -181,6 +184,7 @@ export function seedJobs(): Job[] {
   const fallbackPlan = updatePlan({ ...camPlan, video: { ...camPlan.video, encoder: "hevc_qsv", preset: "medium", qualityValue: 24 } }, camera, caps);
   Object.assign(gpu, {
     status: "running",
+    attempts: 2,
     plan: fallbackPlan,
     encoderUsed: "hevc_qsv",
     args: evaluate(camera, fallbackPlan, caps).args,
@@ -188,8 +192,7 @@ export function seedJobs(): Job[] {
     progress: { percent: 58, outTimeSec: camera.durationSec * 0.58, speed: 2.9, fps: 72.5, sizeBytes: 139_000_000, dupFrames: 0, dropFrames: 0 },
     events: [
       ev(-44, "info", "已加入队列"),
-      ev(-43, "warn", "预检失败：hevc_nvenc — Cannot load nvcuda.dll（归类：设备缺失，本机没有 NVIDIA 驱动）"),
-      ev(-43, "warn", "本次会话已禁用 NVENC，按回退链改用 hevc_qsv（Intel QSV，已通过试编码验证）"),
+      ev(-43, "warn", "hevc_nvenc 的设备不可用（[hevc_nvenc @ 000001f2e4327240] Cannot load nvcuda.dll），本次运行不再使用 NVIDIA NVENC，回退到 hevc_qsv"),
       ev(-42, "info", "预检通过：hevc_qsv 以当前参数试编码 3 帧成功"),
       ev(-41, "info", "开始转码"),
     ],
@@ -212,6 +215,7 @@ export function seedJobs(): Job[] {
   const failed = makeJob(broken, recommendPlan(broken, "archive", caps), DEFAULT_SETTINGS, "job-failed");
   Object.assign(failed, {
     status: "failed",
+    attempts: 1,
     startedAt: T0 - 300_000,
     finishedAt: T0 - 299_000,
     log: [

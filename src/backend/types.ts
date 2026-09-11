@@ -1,4 +1,14 @@
-import type { Capabilities, ImportProgress, ImportResult, ProbeProgress, Settings } from "@/lib/types";
+import type {
+  Capabilities,
+  ImportProgress,
+  ImportResult,
+  JobProgressEvent,
+  ProbeProgress,
+  QueueItem,
+  QueueOp,
+  QueueSnapshot,
+  Settings,
+} from "@/lib/types";
 
 /** 拖放到窗口上的文件：进入、离开与松开 */
 export interface DropHandlers {
@@ -34,4 +44,19 @@ export interface Backend {
   pickFiles(title: string): Promise<string[]>;
   /** 用系统浏览器打开链接 */
   openUrl(url: string): Promise<void>;
+  /** 在文件管理器里定位这个文件 */
+  revealPath(path: string): Promise<void>;
+  /** 需要用户明确同意的操作（例如改为覆盖同名文件）；返回是否同意 */
+  confirm(message: string, title: string): Promise<boolean>;
+
+  /** 队列的完整状态；之后的变化通过 onQueueSnapshot / onQueueProgress 推送 */
+  getQueue(): Promise<QueueSnapshot>;
+  /** 加入队列，返回新任务的 id。后端按计划重新生成命令，不使用界面上的预览命令 */
+  queueAdd(items: QueueItem[]): Promise<string[]>;
+  /** 暂停、继续、取消、重试、移除、换序、全部暂停、清除已完成；不合法的操作抛出原因 */
+  queueControl(op: QueueOp): Promise<void>;
+  /** 结构或状态变化：整体替换 */
+  onQueueSnapshot(cb: (s: QueueSnapshot) => void): () => void;
+  /** 运行中的进度 */
+  onQueueProgress(cb: (e: JobProgressEvent) => void): () => void;
 }

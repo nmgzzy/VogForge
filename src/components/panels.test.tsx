@@ -5,6 +5,7 @@ import { evaluate, recommendPlan } from "@/lib/engine";
 import { MOCK_CAPABILITIES as caps } from "@/mock/capabilities";
 import { MOCK_MEDIA } from "@/mock/media";
 import { useProject } from "@/stores/project";
+import { useUi } from "@/stores/ui";
 import { CommandBar } from "./CommandBar";
 import { ExpertPanel } from "./ExpertPanel";
 import { FidelityPanel } from "./FidelityPanel";
@@ -117,6 +118,7 @@ describe("码率控制（更多参数）", () => {
   };
 
   beforeEach(() => {
+    useUi.setState({ commandExpanded: false });
     useProject.setState({ files: [], plans: {}, selectedId: undefined });
     useProject.getState().loadSamples();
     useProject.getState().select("m-drone");
@@ -150,6 +152,24 @@ describe("码率控制（更多参数）", () => {
     expect(twoPass).toHaveAttribute("title", expect.stringContaining("只有软件编码器支持"));
     // QSV 能做"质量 + 限峰值"（QVBR）
     expect(screen.getByRole("radio", { name: "限峰值" })).toBeEnabled();
+  });
+
+  it("响度标准化：只有重新编码的音轨可用，开启后命令栏列出每条音轨的测量命令", () => {
+    // 航拍素材没有音轨，选项不可用
+    renderExpert();
+    expect(screen.getByRole("radio", { name: "标准化 -16 LUFS" })).toBeDisabled();
+
+    useProject.getState().select("m-bluray");
+    useProject.getState().setScenario("streaming");
+    const { plan, result } = selected();
+    const view = render(<ExpertPanel plan={plan} result={result} />);
+    fireEvent.click(within(view.container).getByRole("button", { name: /更多参数/ }));
+    fireEvent.click(within(view.container).getByRole("radio", { name: "标准化 -16 LUFS" }));
+    const after = selected();
+    expect(after.plan.loudnorm).toBe(true);
+    render(<CommandBar media={after.media} plan={after.plan} result={after.result} />);
+    fireEvent.click(screen.getByTitle("展开查看完整命令"));
+    expect(screen.getAllByTestId("loudness-measure")).toHaveLength(2);
   });
 
   it("两遍编码时命令栏标出两遍，复制内容包含第一遍", () => {

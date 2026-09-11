@@ -8,7 +8,7 @@ use vidforge_core::ffmpeg::capability::{ProbeContext, probe};
 use vidforge_core::ffmpeg::exec::SystemRunner;
 use vidforge_core::ffmpeg::locate::SystemEnv;
 use vidforge_core::import::import_paths;
-use vidforge_core::model::{Capabilities, EnvStatus, ImportResult, Platform};
+use vidforge_core::model::{Capabilities, EnvStatus, ImportResult, Platform, QueueItem, QueueOp, QueueSnapshot};
 
 use crate::state::AppState;
 
@@ -36,6 +36,7 @@ fn probe_blocking(app: &AppHandle, force: bool) -> CmdResult<Capabilities> {
         let _ = emitter.emit(EVENT_PROBE_PROGRESS, p);
     });
     *state.caps.lock().map_err(|e| e.to_string())? = Some(caps.clone());
+    state.sync_queue();
     Ok(caps)
 }
 
@@ -65,7 +66,25 @@ pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResul
     let settings = settings.sanitized();
     config::save_settings(&state.app_dir, &settings).map_err(|e| format!("保存设置失败：{e}"))?;
     *state.settings.lock().map_err(|e| e.to_string())? = settings.clone();
+    state.sync_queue();
     Ok(settings)
+}
+
+/// 队列的完整状态；之后的变化通过 `queue://snapshot` 与 `queue://progress` 事件推送
+#[tauri::command]
+pub fn queue_snapshot(state: State<'_, AppState>) -> QueueSnapshot {
+    state.queue.snapshot()
+}
+
+/// 加入队列。命令由后端按计划重新生成，不使用界面上的预览命令
+#[tauri::command]
+pub fn queue_add(state: State<'_, AppState>, items: Vec<QueueItem>) -> Vec<String> {
+    state.queue.add(items)
+}
+
+#[tauri::command]
+pub fn queue_control(state: State<'_, AppState>, op: QueueOp) -> CmdResult<()> {
+    state.queue.apply(op)
 }
 
 /// 导入文件与文件夹（文件夹递归扫描），逐个用 ffprobe 分析。版本过低的 ffmpeg 也能分析，只是不能转码

@@ -5,12 +5,13 @@
 use std::path::Path;
 
 use crate::model::{
-    ArgSegment, AudioStream, Capabilities, Container, DoviAction, EncoderId, FpsPolicy, HdrAction, MediaInfo,
-    RateControl, ResolutionPreset, StreamAction, SubtitleMode, ToneMapPipeline, TranscodePlan, VideoStream,
+    ArgSegment, AudioStream, Capabilities, Container, DoviAction, EncoderId, EnvStatus, FpsPolicy, HdrAction,
+    MediaInfo, RateControl, ResolutionPreset, StreamAction, SubtitleMode, ToneMapPipeline, TranscodePlan, VideoStream,
 };
 
 use super::encoders::{Family, supports_rate_control};
 use super::fps::fps_arg;
+use super::loudness::LoudnessMeasure;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dimensions {
@@ -60,9 +61,10 @@ pub fn downmix_filter(src: &AudioStream) -> String {
 /// 硬件解码参数。一律用 `-hwaccel auto`：解码后的帧自动下载到内存，软件滤镜与各家编码器都能接。
 /// 不能按编码器写 `-hwaccel qsv`：9.0 起它默认把帧留在 GPU 上，后面再要求 `-pix_fmt p010le` 会转换失败
 /// （技术事实文档 7.5 节，阶段 4 实测）
-fn hwaccel_for(plan: &TranscodePlan, media: &MediaInfo) -> Vec<String> {
+fn hwaccel_for(plan: &TranscodePlan, media: &MediaInfo, caps: &Capabilities) -> Vec<String> {
     let vp = &plan.video;
-    if vp.action == StreamAction::Copy {
+    // 探测完成后没有任何硬解方式（构建不带，或设置里关了硬件解码）就不写
+    if vp.action == StreamAction::Copy || (caps.status == EnvStatus::Ready && caps.hwaccels.is_empty()) {
         return Vec::new();
     }
     // 硬解后的 hwdownload 可能丢失 DV RPU 与 HDR10+ 等 side data，保留这些时走全软件路径
@@ -389,7 +391,7 @@ fn prepared_filters(media: &MediaInfo, plan: &TranscodePlan) -> Filters {
     filters
 }
 
-fn head_segments(media: &MediaInfo, plan: &TranscodePlan, filters: &Filters) -> Vec<ArgSegment> {
+fn head_segments(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities, filters: &Filters) -> Vec<ArgSegment> {
     // -y：输出是应用自己管理的临时文件，上次中断留下的同名文件直接覆盖；与目标文件的冲突在改名那一步处理
     let global = strings(&[
         "ffmpeg",
@@ -402,7 +404,7 @@ fn head_segments(media: &MediaInfo, plan: &TranscodePlan, filters: &Filters) -> 
         "pipe:1",
         "-nostats",
     ]);
-    let mut input = filters.hwaccel.clone().unwrap_or_else(|| hwaccel_for(plan, media));
+    let mut input = filters.hwaccel.clone().unwrap_or_else(|| hwaccel_for(plan, media, caps));
     input.extend(filters.pre.iter().cloned());
     input.extend(["-i".to_string(), media.path.clone()]);
     vec![seg("全局", global), seg("输入", input)]
@@ -437,11 +439,16 @@ fn video_segments(
 }
 
 /// 两遍编码的第一遍：只编码视频做分析，输出丢弃。其余模式返回 None
-pub fn build_first_pass(media: &MediaInfo, plan: &TranscodePlan, output: &Path) -> Option<Vec<ArgSegment>> {
+pub fn build_first_pass(
+    media: &MediaInfo,
+    plan: &TranscodePlan,
+    caps: &Capabilities,
+    output: &Path,
+) -> Option<Vec<ArgSegment>> {
     let v = media.video.first().filter(|_| two_pass(plan))?;
     let filters = prepared_filters(media, plan);
     let prefix = passlog_prefix(output);
-    let mut segs = head_segments(media, plan, &filters);
+    let mut segs = head_segments(media, plan, caps, &filters);
     segs.push(seg("映射", vec!["-map".into(), format!("0:{}", v.index)]));
     segs.extend(video_segments(v, plan, &filters, Some((1, &prefix))));
     segs.push(seg("封装", strings(&["-f", "null"])));
@@ -449,18 +456,29 @@ pub fn build_first_pass(media: &MediaInfo, plan: &TranscodePlan, output: &Path) 
     Some(segs)
 }
 
-/// 生成完整命令（分段）。`output` 是实际写入的路径（通常是 `.vidforge-part` 临时文件）；`_caps` 预留给
-/// 依赖环境的写法（例如将来按平台选择硬解方式），现有规则都已体现在计划里。两遍编码时这是第二遍
+/// 生成完整命令（分段）。`output` 是实际写入的路径（通常是 `.vidforge-part` 临时文件）；`caps` 决定
+/// 是否写硬解参数。两遍编码时这是第二遍
 pub fn build_arg_segments(
     media: &MediaInfo,
     plan: &TranscodePlan,
-    _caps: &Capabilities,
+    caps: &Capabilities,
     output: &Path,
+) -> Vec<ArgSegment> {
+    build_arg_segments_measured(media, plan, caps, output, &[])
+}
+
+/// 同 [`build_arg_segments`]，带上响度标准化第一遍测得的值（按输出音轨序号）。没有测量值的音轨用单遍写法
+pub fn build_arg_segments_measured(
+    media: &MediaInfo,
+    plan: &TranscodePlan,
+    caps: &Capabilities,
+    output: &Path,
+    loudness: &[(usize, LoudnessMeasure)],
 ) -> Vec<ArgSegment> {
     let v = media.video.first();
     let vp = &plan.video;
     let filters = prepared_filters(media, plan);
-    let mut segs = head_segments(media, plan, &filters);
+    let mut segs = head_segments(media, plan, caps, &filters);
 
     // 映射
     // 按分析得到的流序号映射：`0:v:0` 会把排在前面的封面图也算进去
@@ -512,7 +530,7 @@ pub fn build_arg_segments(
         if t.action == StreamAction::Copy {
             audio.extend([format!("-c:a:{i}"), "copy".into()]);
         } else {
-            audio.extend([format!("-c:a:{i}"), t.codec.map(|c| c.name()).unwrap_or("aac").to_string()]);
+            audio.extend([format!("-c:a:{i}"), t.codec.map(|c| c.encoder()).unwrap_or("aac").to_string()]);
             if let Some(kbps) = t.bitrate_kbps {
                 audio.extend([format!("-b:a:{i}"), format!("{kbps}k")]);
             }
@@ -523,6 +541,10 @@ pub fn build_arg_segments(
             }
             if matches!(vp.fps, FpsPolicy::Cfr { .. }) {
                 af.push("aresample=async=1".to_string());
+            }
+            if super::loudness::applies(plan, i) {
+                let measured = loudness.iter().find(|(k, _)| *k == i).map(|(_, m)| m);
+                af.push(super::loudness::filter(measured, super::loudness::output_rate(media, plan, i)));
             }
             if !af.is_empty() {
                 audio.extend([format!("-filter:a:{i}"), af.join(",")]);
@@ -582,6 +604,20 @@ pub fn build_arg_segments(
 
     segs.push(seg("输出", vec![output.to_string_lossy().to_string()]));
     segs
+}
+
+/// 任务级预检（设计文档 4.1）：用这个任务真实的视频编码参数编 3 帧测试图，抓"设备在、但这组参数不支持"。
+/// 不带滤镜（它们可能依赖硬件设备或素材本身），输出丢弃。原样封装返回 None
+pub fn dry_run_args(media: &MediaInfo, plan: &TranscodePlan) -> Option<Vec<String>> {
+    let v = media.video.first().filter(|_| plan.video.action == StreamAction::Encode)?;
+    let (w, h) = target_dimensions(v, plan.video.resolution).map_or_else(|| display_size(v), |d| (d.w, d.h));
+    // 奇数尺寸部分硬件编码器不接受，测试图取偶数
+    let size = format!("testsrc2=s={}x{}:r=30", w.max(2) & !1, h.max(2) & !1);
+    let mut a = strings(&["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", &size]);
+    a.extend(strings(&["-frames:v", "3"]));
+    a.extend(encoder_args(plan, v));
+    a.extend(strings(&["-an", "-f", "null", "-"]));
+    Some(a)
 }
 
 pub fn flatten(segs: &[ArgSegment]) -> Vec<String> {

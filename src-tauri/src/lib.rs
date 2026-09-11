@@ -3,7 +3,7 @@
 mod commands;
 mod state;
 
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 use state::AppState;
 
@@ -14,7 +14,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            app.manage(AppState::load());
+            app.manage(AppState::load(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -22,7 +22,16 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::import_media,
+            commands::queue_snapshot,
+            commands::queue_add,
+            commands::queue_control,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 退出时结束正在跑的 ffmpeg；任务状态不改，下次启动时按"没跑完"重新排队
+            if let RunEvent::Exit = event {
+                app.state::<AppState>().queue.shutdown();
+            }
+        });
 }

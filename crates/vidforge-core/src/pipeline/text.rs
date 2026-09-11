@@ -58,9 +58,37 @@ pub fn format_bitrate(bps: f64) -> String {
     }
 }
 
+/// 文件大小，1024 进位，与前端 `formatBytes` 一致：小于 10 的数多给一位小数
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes == 0 {
+        return "0 B".into();
+    }
+    let i = ((bytes as f64).ln() / 1024f64.ln()).floor().min((UNITS.len() - 1) as f64) as usize;
+    let v = bytes as f64 / 1024f64.powi(i as i32);
+    let digits = if i == 0 {
+        0
+    } else if v < 10.0 {
+        2
+    } else {
+        1
+    };
+    format!("{} {}", to_fixed(v, digits), UNITS[i])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_match_the_frontend() {
+        // 与 src/lib/format.ts 的 formatBytes 相同的输入输出
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(23_373_468), "22.3 MB");
+        assert_eq!(format_bytes(9_315_293), "8.88 MB");
+        assert_eq!(format_bytes(66_500_000_000), "61.9 GB");
+    }
 
     #[test]
     fn matches_js_formatting() {
