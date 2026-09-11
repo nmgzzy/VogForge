@@ -77,7 +77,7 @@ jobs:
         run: |
           set -o pipefail
           if ! cargo test --workspace --no-fail-fast 2>&1 | tee test.log; then
-            msg=$(grep -E -A4 "panicked at|^---- " test.log | head -120 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            msg=$(grep -E -A3 "panicked at" test.log | grep -v "^note: run with" | head -400 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::error title=cargo test failed::${msg}"
             exit 1
           fi

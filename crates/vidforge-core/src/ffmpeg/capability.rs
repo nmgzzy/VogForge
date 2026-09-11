@@ -678,8 +678,11 @@ mod tests {
     }
 
     impl Runner for FakeFfmpeg {
-        fn run(&self, _p: &Path, a: &[String], _t: Duration) -> io::Result<ExecOutput> {
-            self.calls.lock().unwrap().push(a.to_vec());
+        fn run(&self, p: &Path, a: &[String], _t: Duration) -> io::Result<ExecOutput> {
+            // 只记 ffmpeg / ffprobe 的调用：macOS 上查显卡还会跑 sw_vers 与 system_profiler
+            if p.file_stem().is_some_and(|s| s.to_string_lossy().starts_with("ff")) {
+                self.calls.lock().unwrap().push(a.to_vec());
+            }
             let has = |x: &str| a.iter().any(|s| s == x);
             if has("-version") {
                 return Self::ok(fixture(self.build, "version.txt"));

@@ -439,7 +439,7 @@ mod tests {
         let r = locate(&win_opts(), &env, &runner);
         let f = r.found.expect("应通过注册表 PATH 找到");
         assert_eq!(f.source, LocateSource::Registry);
-        assert_eq!(f.ffmpeg, Path::new(r"C:\Program1\ffmpeg\bin\ffmpeg.exe"));
+        assert_eq!(f.ffmpeg, Path::new(r"C:\Program1\ffmpeg\bin").join("ffmpeg.exe"));
     }
 
     #[test]
@@ -447,7 +447,7 @@ mod tests {
         let mut env = FakeEnv::default();
         let mut runner = VersionRunner(HashMap::new());
         install(&mut env, &mut runner, r"E:\tools\ff", "7.1");
-        let opts = LocateOptions { user_path: Some(PathBuf::from(r"E:\tools\ff\ffmpeg.exe")), ..win_opts() };
+        let opts = LocateOptions { user_path: Some(Path::new(r"E:\tools\ff").join("ffmpeg.exe")), ..win_opts() };
         let r = locate(&opts, &env, &runner);
         assert_eq!(r.found.unwrap().source, LocateSource::User);
     }
@@ -472,7 +472,7 @@ mod tests {
         install(&mut env, &mut runner, r"C:\old\bin", "6.0");
         install(&mut env, &mut runner, r"C:\new\bin", "7.1.1");
         let f = locate(&win_opts(), &env, &runner).found.unwrap();
-        assert_eq!(f.ffmpeg, Path::new(r"C:\new\bin\ffmpeg.exe"));
+        assert_eq!(f.ffmpeg, Path::new(r"C:\new\bin").join("ffmpeg.exe"));
     }
 
     #[test]
@@ -489,7 +489,7 @@ mod tests {
     fn ffmpeg_without_ffprobe_is_skipped_with_a_problem() {
         let mut env = FakeEnv::default();
         env.vars.insert("PATH".into(), r"C:\half".into());
-        env.files.insert(PathBuf::from(r"C:\half\ffmpeg.exe"));
+        env.files.insert(Path::new(r"C:\half").join("ffmpeg.exe"));
         let r = locate(&win_opts(), &env, &VersionRunner(HashMap::new()));
         assert!(r.found.is_none());
         assert!(r.problems.iter().any(|p| p.contains("没有 ffprobe")));
@@ -499,8 +499,8 @@ mod tests {
     fn unrunnable_ffmpeg_is_reported_as_broken() {
         let mut env = FakeEnv::default();
         env.vars.insert("PATH".into(), r"C:\bad".into());
-        env.files.insert(PathBuf::from(r"C:\bad\ffmpeg.exe"));
-        env.files.insert(PathBuf::from(r"C:\bad\ffprobe.exe"));
+        env.files.insert(Path::new(r"C:\bad").join("ffmpeg.exe"));
+        env.files.insert(Path::new(r"C:\bad").join("ffprobe.exe"));
         // 执行器里没有登记这两个程序，模拟"文件在但跑不起来"
         let r = locate(&win_opts(), &env, &VersionRunner(HashMap::new()));
         assert!(r.found.is_none());
@@ -522,7 +522,7 @@ mod tests {
     fn winget_package_dirs_are_discovered() {
         let mut env = FakeEnv::default();
         env.vars.insert("LOCALAPPDATA".into(), r"C:\Users\u\AppData\Local".into());
-        let pkgs = PathBuf::from(r"C:\Users\u\AppData\Local\Microsoft\WinGet\Packages");
+        let pkgs = Path::new(r"C:\Users\u\AppData\Local").join("Microsoft").join("WinGet").join("Packages");
         let pkg = pkgs.join("Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe");
         env.dirs.insert(pkgs.clone(), vec![pkg.clone(), pkgs.join("Other.Tool")]);
         env.dirs.insert(pkg.clone(), vec![pkg.join("ffmpeg-7.1-full_build")]);
