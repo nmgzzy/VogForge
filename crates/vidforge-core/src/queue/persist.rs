@@ -95,6 +95,7 @@ mod tests {
             args: vec!["ffmpeg".into()],
             first_pass: None,
             output_path: output.to_string_lossy().to_string(),
+            date: None,
             status,
             progress: JobProgress { percent: 40.0, ..Default::default() },
             events: Vec::new(),

@@ -34,6 +34,14 @@ pnpm dev          # 只看界面：浏览器打开 http://localhost:1420，使�
 
 浏览器预览内置 6 个示例素材（iPhone 杜比视界、蓝光 remux、无人机、手机录屏、相机、流媒体片源）与开发机的真实探测结果，队列是同一接口的模拟队列。桌面应用的队列保存在 `~/.vidforge/queue.json`。
 
+## 打包
+
+```bash
+pnpm tauri build --bundles nsis   # Windows 安装包
+```
+
+产物是 `target/release/bundle/nsis/VidForge_<版本>_x64-setup.exe`（约 3 MB），装在当前用户下、不需要管理员权限，可以直接发给别人。安装包没有代码签名，Windows 会提示“已保护你的电脑”，点“更多信息”→“仍要运行”。安装包不带 ffmpeg：对方首次打开时，入门引导与“环境与硬件”页给出下载地址，把 `ffmpeg.exe`、`ffprobe.exe` 放进 `~/.vidforge/ffmpeg/bin`（页面上有打开这个文件夹的按钮）即可。macOS 安装包需要在 Mac 上构建并签名，见 [TODO](docs/todo.md)。
+
 ## 测试
 
 ```bash

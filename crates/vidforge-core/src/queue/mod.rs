@@ -232,7 +232,8 @@ impl Inner {
         let caps = env.effective(&s.disabled);
         let Some(job) = s.job_mut(id) else { return };
         let plan = update_plan(job.plan.clone(), &job.media, &caps);
-        let out = crate::output::output_path(&job.media, &plan, &env.settings, &crate::output::today());
+        let date = job.date.clone().unwrap_or_else(crate::output::today);
+        let out = crate::output::output_path(&job.media, &plan, &env.settings, &date);
         let temp = files::temp_path(&out);
         job.args = flatten(&build_arg_segments(&job.media, &plan, &caps, &temp));
         job.first_pass = build_first_pass(&job.media, &plan, &caps, &temp).map(|s| flatten(&s));
@@ -382,6 +383,7 @@ impl Queue {
                     encoder_used: item.plan.video.encoder,
                     media: item.media,
                     plan: item.plan,
+                    date: item.date,
                     args: Vec::new(),
                     first_pass: None,
                     output_path: String::new(),

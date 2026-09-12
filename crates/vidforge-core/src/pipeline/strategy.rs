@@ -14,7 +14,8 @@ use super::encoders::{
     EncoderNeeds, codec_available, default_preset, pick_encoder, preset_options, quality_value, supports_10bit,
     supports_rate_control,
 };
-use super::fps::recommend_cfr_target;
+use super::estimate::source_video_bps;
+use super::fps::{recommend_cfr_target, source_rate};
 
 /// 场景默认格式在当前 ffmpeg 里编不了时，按这个顺序换一种
 const CODEC_FALLBACK: [Codec; 3] = [Codec::Hevc, Codec::H264, Codec::Av1];
@@ -22,6 +23,12 @@ const CODEC_FALLBACK: [Codec; 3] = [Codec::Hevc, Codec::H264, Codec::Av1];
 /// 码率输入的合理范围（kbps）：再低画面不可看，再高超过任何编码级别
 pub const MIN_KBPS: u32 = 100;
 pub const MAX_KBPS: u32 = 400_000;
+
+/// 目标码率的上限：不高于源视频码率（不升档，设计文档 4.5），并落在输入范围内。源码率未知时只受输入范围约束
+pub fn max_target_kbps(media: &MediaInfo) -> u32 {
+    let source = (source_video_bps(media) / 1000.0).floor() as u32;
+    if source == 0 { MAX_KBPS } else { source.clamp(MIN_KBPS, MAX_KBPS) }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CfrPolicy {
@@ -226,6 +233,15 @@ fn primary_audio(media: &MediaInfo) -> Option<&AudioStream> {
     media.audio.iter().find(|a| a.is_default).or(media.audio.first())
 }
 
+/// 重新编码的音轨不升档：码率不高于源（有损源且码率已知时；无损源的码率远高于任何有损码率）。
+/// 源码率异常小时仍留 32k 的底，免得被错误的元数据压成不可听
+fn audio_kbps(src: &AudioStream, kbps: u32) -> u32 {
+    match src.bitrate {
+        Some(b) if !src.lossless && b > 0 => (b / 1000).max(32).min(u64::from(kbps)) as u32,
+        _ => kbps,
+    }
+}
+
 /// 按音频策略生成输出音轨
 pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabilities) -> Vec<AudioTrackPlan> {
     let Some(primary) = primary_audio(media) else { return Vec::new() };
@@ -244,8 +260,9 @@ pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabi
         source_index: src.index,
         action: StreamAction::Encode,
         codec: Some(stereo_codec),
-        bitrate_kbps: Some(stereo_rate),
-        channels: Some(2),
+        bitrate_kbps: Some(audio_kbps(src, stereo_rate)),
+        // 单声道源保持单声道，不升成立体声
+        channels: Some(if src.channels == 1 { 1 } else { 2 }),
         title: if src.channels > 2 {
             // 生成轨的标题写进文件，用英文：任何语言的播放器都能读，计划也不随界面语言变化
             Some(format!("{} Stereo (downmix)", stereo_codec.name().to_uppercase()))
@@ -285,7 +302,7 @@ pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabi
             source_index: a.index,
             action: StreamAction::Encode,
             codec: Some(if multi { AudioCodec::Eac3 } else { AudioCodec::Aac }),
-            bitrate_kbps: Some(if multi { 640 } else { 256 }),
+            bitrate_kbps: Some(audio_kbps(a, if multi { 640 } else { 256 })),
             channels: Some(if multi { a.channels.min(6) } else { a.channels }),
             title: a.title.clone(),
             role: TrackRole::Original,
@@ -309,16 +326,19 @@ pub fn build_audio_tracks(media: &MediaInfo, plan: &TranscodePlan, caps: &Capabi
                 if lossy && fits && (!single || a.channels <= 2) && !(single && a.codec != stereo_codec.name()) {
                     tracks.push(copy_of(a));
                 } else if !single && a.channels > 2 {
+                    // 3–5 声道的源保持原声道数，不升成 5.1
+                    let ch = a.channels.min(6);
+                    let layout = if ch == 6 { "5.1".to_string() } else { format!("{ch}ch") };
                     tracks.push(AudioTrackPlan {
                         source_index: a.index,
                         action: StreamAction::Encode,
                         codec: Some(AudioCodec::Eac3),
-                        bitrate_kbps: Some(640),
-                        channels: Some(6),
+                        bitrate_kbps: Some(audio_kbps(a, 640)),
+                        channels: Some(ch),
                         title: Some(if a.atmos {
-                            "DD+ 5.1 (from Atmos, without Atmos metadata)".into()
+                            format!("DD+ {layout} (from Atmos, without Atmos metadata)")
                         } else {
-                            "DD+ 5.1".into()
+                            format!("DD+ {layout}")
                         }),
                         role: TrackRole::Compat,
                     });
@@ -391,20 +411,36 @@ pub fn normalize_plan(mut plan: TranscodePlan, media: &MediaInfo, caps: &Capabil
         if !preset_options(vp.encoder).contains(&vp.preset.as_str()) {
             vp.preset = default_preset(vp.encoder, scenario).to_string();
         }
-        // 码率数值拉回合理范围；编码器做不到的码率控制换成最接近的模式（手选了硬件编码器又要两遍时）
+        // 码率数值拉回合理范围，且不升档：平均码率不高于源视频码率，峰值不高于它的 1.5 倍（与"目标码率"
+        // 模式的峰值 1.5 倍对应；QSV 的 QVBR 取峰值的 2/3 作平均码率）。
+        // 编码器做不到的码率控制换成最接近的模式（手选了硬件编码器又要两遍时）
+        let top = max_target_kbps(media);
+        let peak = (top * 3 / 2).min(MAX_KBPS);
         vp.rate_control = match vp.rate_control {
             RateControl::Quality => RateControl::Quality,
-            RateControl::Bitrate { kbps } => RateControl::Bitrate { kbps: kbps.clamp(MIN_KBPS, MAX_KBPS) },
-            RateControl::Capped { kbps } => RateControl::Capped { kbps: kbps.clamp(MIN_KBPS, MAX_KBPS) },
-            RateControl::TwoPass { kbps } => RateControl::TwoPass { kbps: kbps.clamp(MIN_KBPS, MAX_KBPS) },
+            RateControl::Bitrate { kbps } => RateControl::Bitrate { kbps: kbps.clamp(MIN_KBPS, top) },
+            RateControl::Capped { kbps } => RateControl::Capped { kbps: kbps.clamp(MIN_KBPS, peak) },
+            RateControl::TwoPass { kbps } => RateControl::TwoPass { kbps: kbps.clamp(MIN_KBPS, top) },
         };
         if !supports_rate_control(vp.encoder, vp.rate_control) {
             vp.rate_control = match vp.rate_control {
                 // 峰值换算成平均码率：与"目标码率"模式的峰值 1.5 倍对应
-                RateControl::Capped { kbps } => RateControl::Bitrate { kbps: kbps * 2 / 3 },
+                RateControl::Capped { kbps } => RateControl::Bitrate { kbps: (kbps * 2 / 3).max(MIN_KBPS) },
                 RateControl::TwoPass { kbps } => RateControl::Bitrate { kbps },
                 other => other,
             };
+        }
+        // 不提帧率：固定帧率的目标不高于源（可变帧率源以名义帧率为准）。更高的帧率只是复制帧
+        // 源帧率读不出时不封顶（否则会拉成 0 fps）；不合法的目标（0、负数）换成推荐值，绝不生成 -r 0
+        if let FpsPolicy::Cfr { fps } = vp.fps {
+            if !(fps.is_finite() && fps > 0.0) {
+                vp.fps = FpsPolicy::Cfr { fps: media.video.first().map_or(30.0, recommend_cfr_target) };
+            }
+        }
+        if let (FpsPolicy::Cfr { fps }, Some(source)) = (vp.fps, media.video.first().and_then(source_rate)) {
+            if fps > source * (1.0 + 1e-9) {
+                vp.fps = FpsPolicy::Cfr { fps: source };
+            }
         }
         // 硬件编码器不支持 10bit 时降为 8bit，保真度面板会给出提示
         if vp.bit_depth == 10 && !supports_10bit(vp.encoder, caps) {

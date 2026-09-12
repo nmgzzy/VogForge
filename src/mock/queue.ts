@@ -28,12 +28,15 @@ export function makeJob(
   plan: TranscodePlan,
   settings: Settings = DEFAULT_SETTINGS,
   id = `job-${Math.random().toString(36).slice(2, 9)}`,
+  date?: string,
 ): Job {
-  const r = evaluate(m, plan, caps, settings);
+  // 命名模板的 {date} 用加入队列时界面给出的日期，与真实后端一致
+  const r = evaluate(m, plan, caps, settings, date);
   return {
     id,
     media: m,
     plan,
+    date,
     args: r.args,
     firstPass: r.firstPass,
     outputPath: r.args[r.args.length - 1]!,

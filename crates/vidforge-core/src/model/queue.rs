@@ -101,6 +101,9 @@ pub struct Job {
     pub first_pass: Option<Vec<String>>,
     /// 最终文件路径
     pub output_path: String,
+    /// 命名模板里 `{date}` 用的日期，来自加入队列时的界面
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
     pub status: JobStatus,
     pub progress: JobProgress,
     pub encoder_used: EncoderId,
@@ -121,10 +124,13 @@ pub struct Job {
 
 /// 加入队列的一项：界面上的素材与计划。命令由后端按计划重新生成，不信任前端的参数
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct QueueItem {
     pub media: MediaInfo,
     pub plan: TranscodePlan,
+    /// 命名模板里 `{date}` 用的本地日期（YYYY-MM-DD），界面加入队列时给出，与预览一致。没有时用当天（UTC）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// 队列的完整状态，结构变化（增删、换序、状态改变）时整体推送

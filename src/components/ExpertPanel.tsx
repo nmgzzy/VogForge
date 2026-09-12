@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, SlidersHorizontal } from "lucide-react";
 import { tr } from "@/i18n";
-import type { Capabilities, PlanResult, RateControl, RateControlKind, TranscodePlan } from "@/lib/types";
+import type { Capabilities, MediaInfo, PlanResult, RateControl, RateControlKind, TranscodePlan } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { encoderSupports10bit } from "@/lib/encoders";
-import { encoderMeta, engineMeta } from "@/lib/engine";
+import { encoderMeta, engineMeta, videoHints } from "@/lib/engine";
 import { formatBitrate } from "@/lib/format";
 import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
@@ -89,13 +89,25 @@ function rcUnavailable(kind: RateControlKind, plan: TranscodePlan, caps: Capabil
 }
 
 /** 以 Mbps 输入码率。输入过程中允许暂时不合法（例如清空），失焦或回车时提交 */
-function MbpsInput({ kbps, onCommit, label }: { kbps: number; onCommit: (kbps: number) => void; label: string }) {
+function MbpsInput({
+  kbps,
+  onCommit,
+  label,
+  sourceKbps,
+}: {
+  kbps: number;
+  onCommit: (kbps: number) => void;
+  label: string;
+  sourceKbps?: number;
+}) {
   const [draft, setDraft] = useState(String(kbps / 1000));
-  useEffect(() => setDraft(String(kbps / 1000)), [kbps]);
+  // 引擎会把提交的数值拉回范围内（例如不高于源）；拉回后数值没变时，输入框也要回到实际值
+  const [commits, setCommits] = useState(0);
+  useEffect(() => setDraft(String(kbps / 1000)), [kbps, commits]);
   const commit = () => {
     const v = Number(draft);
     if (Number.isFinite(v) && v > 0) onCommit(Math.round(v * 1000));
-    else setDraft(String(kbps / 1000));
+    setCommits((n) => n + 1);
   };
   return (
     <div className="flex h-8 items-center gap-1.5">
@@ -109,15 +121,29 @@ function MbpsInput({ kbps, onCommit, label }: { kbps: number; onCommit: (kbps: n
         onKeyDown={(e) => e.key === "Enter" && commit()}
       />
       <span className="text-xs text-subtle">Mbps</span>
+      {sourceKbps !== undefined && (
+        <span
+          className="text-xs text-subtle"
+          title={tr(
+            "目标码率不会高于源视频码率，限峰值时峰值不高于它的 1.5 倍",
+            "The target never exceeds the source video bitrate; a peak cap stays within 1.5× of it",
+          )}
+        >
+          {tr(`· 源 ${formatBitrate(sourceKbps * 1000)}`, `· source ${formatBitrate(sourceKbps * 1000)}`)}
+        </span>
+      )}
     </div>
   );
 }
 
 /** 由场景自动决定、一般无需改动的参数，默认折叠 */
-export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: PlanResult }) {
+export function ExpertPanel({ media, plan, result }: { media: MediaInfo; plan: TranscodePlan; result: PlanResult }) {
   const [open, setOpen] = useState(false);
   const patch = useProject((s) => s.patchPlan);
   const caps = useEngineCaps();
+  const sourceKbps = useMemo(() => videoHints(media)?.sourceKbps, [media]);
+  // 附加参数有问题时引擎整段不用，推荐理由里有警告；输入框下面也提示一次
+  const extraWarn = result.decisions.find((d) => d.field === tr("附加参数", "Extra arguments") && d.severity === "warn");
   const vp = plan.video;
   const meta = encoderMeta(vp.encoder);
   const copy = vp.action === "copy";
@@ -287,6 +313,7 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
               {rc.kind !== "quality" && (
                 <MbpsInput
                   kbps={rc.kbps}
+                  sourceKbps={sourceKbps}
                   label={rc.kind === "capped" ? tr("峰值码率", "Peak bitrate") : tr("目标码率", "Target bitrate")}
                   onCommit={(kbps) =>
                     patch((d) => {
@@ -365,6 +392,7 @@ export function ExpertPanel({ plan, result }: { plan: TranscodePlan; result: Pla
                 })
               }
             />
+            {extraWarn && <p className="mt-1 text-[11.5px] text-warn">{extraWarn.reason}</p>}
           </Field>
 
           <p className="text-[11px] text-subtle md:col-span-3">

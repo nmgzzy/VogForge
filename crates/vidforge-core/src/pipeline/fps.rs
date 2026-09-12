@@ -56,10 +56,17 @@ pub fn format_number(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") }
 }
 
-/// 推荐的 CFR 目标：优先名义帧率（只复制帧、不丢帧），名义帧率异常（录屏常见 1000/1）时回退到平均帧率
-pub fn recommend_cfr_target(v: &VideoStream) -> f64 {
+/// 源的帧率（吸附到标准档）：优先名义帧率，名义帧率异常（录屏常见 1000/1）时用平均帧率。
+/// 两者都读不出（ffprobe 给 0/0）时为 None。它也是固定帧率目标的上限（不提帧率）
+pub fn source_rate(v: &VideoStream) -> Option<f64> {
     let nominal_sane = (10.0..=240.0).contains(&v.fps_nominal);
-    snap_fps(if nominal_sane { v.fps_nominal } else { v.fps_avg })
+    let fps = snap_fps(if nominal_sane { v.fps_nominal } else { v.fps_avg });
+    (fps.is_finite() && fps > 0.0).then_some(fps)
+}
+
+/// 推荐的 CFR 目标：源的帧率（只复制帧、不丢帧）；源帧率读不出时用 30
+pub fn recommend_cfr_target(v: &VideoStream) -> f64 {
+    source_rate(v).unwrap_or(30.0)
 }
 
 /// 帧率波动剧烈：平均帧率不到名义帧率的 60%，典型如录屏

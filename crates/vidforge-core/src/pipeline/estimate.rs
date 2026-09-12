@@ -85,6 +85,11 @@ fn base_speed(encoder: EncoderId, preset: &str) -> f64 {
     }
 }
 
+/// 源视频码率（bps）。流上没有记录时用整体码率：含音频、略偏高，只用作比较基准与上限
+pub fn source_video_bps(media: &MediaInfo) -> f64 {
+    media.video.first().and_then(|v| v.bitrate).map_or(media.bitrate as f64, |b| b as f64)
+}
+
 pub struct EstimateResult {
     pub estimate: Estimate,
     pub video_bps: f64,
@@ -103,7 +108,7 @@ pub fn estimate(media: &MediaInfo, plan: &TranscodePlan) -> EstimateResult {
             sum + f64::from(t.bitrate_kbps.unwrap_or(192)) * 1000.0
         }
     });
-    let source_video_bps = v.and_then(|v| v.bitrate).map_or(media.bitrate as f64, |b| b as f64);
+    let source_video_bps = source_video_bps(media);
 
     let Some(v) = v.filter(|_| vp.action == StreamAction::Encode) else {
         let size = media.size_bytes as f64;

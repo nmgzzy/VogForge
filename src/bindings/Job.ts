@@ -19,7 +19,11 @@ args: Array<string>, firstPass?: Array<string>,
 /**
  * 最终文件路径
  */
-outputPath: string, status: JobStatus, progress: JobProgress, encoderUsed: EncoderId, events: Array<JobEvent>, 
+outputPath: string, 
+/**
+ * 命名模板里 `{date}` 用的日期，来自加入队列时的界面
+ */
+date?: string, status: JobStatus, progress: JobProgress, encoderUsed: EncoderId, events: Array<JobEvent>, 
 /**
  * ffmpeg 输出的最后若干行
  */

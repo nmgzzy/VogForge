@@ -193,6 +193,9 @@ pub struct MediaInfo {
     pub subtitle: Vec<SubtitleStream>,
     pub chapters: u32,
     pub attachments: u32,
+    /// MP4 / MOV 的封面图（attached_pic 视频流）张数，没有时为空。现在的命令不带封面，推荐理由与校验会标出
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covers: Option<u32>,
     pub source_hint: SourceHint,
     /// 拍摄设备，如 "Apple iPhone 16 Pro"
     #[serde(skip_serializing_if = "Option::is_none")]

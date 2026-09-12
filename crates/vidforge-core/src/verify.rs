@@ -170,6 +170,34 @@ pub fn report(src: &MediaInfo, plan: &TranscodePlan, out: &MediaInfo, lang: Lang
         ));
     }
 
+    // 重新编码的音轨：输出里对应位置的编码与声道数应符合计划
+    let encoded: Vec<(usize, &str, u32)> = plan
+        .audio
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.action == StreamAction::Encode)
+        .filter_map(|(i, t)| {
+            let a = src.audio.iter().find(|a| a.index == t.source_index)?;
+            Some((i, t.codec.map_or("aac", |c| c.name()), t.channels.unwrap_or(a.channels)))
+        })
+        .collect();
+    if !encoded.is_empty() {
+        let bad: Vec<String> = encoded
+            .iter()
+            .filter(|(i, codec, ch)| out.audio.get(*i).is_none_or(|o| o.codec != *codec || o.channels != *ch))
+            .map(|(i, codec, ch)| {
+                let got = out.audio.get(*i).map_or("-".to_string(), |o| format!("{} {}ch", o.codec, o.channels));
+                format!("#{} {codec} {ch}ch → {got}", i + 1)
+            })
+            .collect();
+        items.push(item(
+            l("重新编码的音轨", "Re-encoded audio"),
+            tr!(lang, "{} 条编码与声道符合计划", "{} track(s) match the plan", encoded.len()),
+            if bad.is_empty() { l("一致", "match").to_string() } else { bad.join(", ") },
+            bad.is_empty(),
+        ));
+    }
+
     let subs = expected_subtitles(src, plan);
     if subs > 0 || !out.subtitle.is_empty() {
         let n = out.subtitle.len();
@@ -186,6 +214,16 @@ pub fn report(src: &MediaInfo, plan: &TranscodePlan, out: &MediaInfo, lang: Lang
             tr!(lang, "{} 个", "{}", src.chapters),
             tr!(lang, "{} 个", "{}", out.chapters),
             out.chapters == src.chapters,
+        ));
+    }
+    // 封面图：现在的命令不带封面（推荐理由里已提醒），这里如实标出，免得报告全绿后源文件被移进回收站
+    if let Some(n) = src.covers.filter(|n| *n > 0) {
+        let got = out.covers.unwrap_or(0);
+        items.push(item(
+            l("封面图", "Cover art"),
+            tr!(lang, "{} 张", "{}", n),
+            tr!(lang, "{} 张", "{}", got),
+            got >= n,
         ));
     }
 
@@ -336,7 +374,7 @@ pub fn report(src: &MediaInfo, plan: &TranscodePlan, out: &MediaInfo, lang: Lang
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Capabilities, EnvStatus, Scenario};
+    use crate::model::{AudioCodec, Capabilities, EnvStatus, Scenario};
     use crate::pipeline::recommend_plan;
 
     fn caps() -> Capabilities {
@@ -348,8 +386,10 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, a)| {
+                // AAC 是立体声（兼容轨），其余按 5.1
+                let (ch, layout) = if *a == "aac" { (2, "stereo") } else { (6, "5.1") };
                 format!(
-                    r#"{{"index":{},"codec":"{a}","channels":6,"channelLayout":"5.1","sampleRate":48000,"isDefault":true,
+                    r#"{{"index":{},"codec":"{a}","channels":{ch},"channelLayout":"{layout}","sampleRate":48000,"isDefault":true,
                     "lossless":{},"atmos":false,"dtsX":false,"durationSec":{duration}}}"#,
                     i + 1,
                     a == &"truehd"
@@ -386,6 +426,24 @@ mod tests {
 
     fn labels(r: &[ReportItem], ok: bool) -> Vec<&str> {
         r.iter().filter(|i| i.ok == ok).map(|i| i.label.as_str()).collect()
+    }
+
+    #[test]
+    fn lost_cover_art_and_mismatched_reencoded_audio_are_flagged() {
+        let mut src = media(&video("hevc", "sdr", ""), &["truehd"], 10.0);
+        src.covers = Some(1);
+        // 手机观看：TrueHD 7.1 转成立体声 AAC
+        let plan = recommend_plan(&src, Scenario::Mobile, &caps());
+        assert_eq!((plan.audio[0].codec, plan.audio[0].channels), (Some(AudioCodec::Aac), Some(2)));
+        let mut out = media(&video("h264", "sdr", ""), &["aac"], 10.0);
+        out.audio[0].channels = 6; // 输出成了 6 声道，与计划的立体声不符
+        let r = report(&src, &plan, &out, Lang::ZhCn);
+        let bad = labels(&r, false);
+        assert!(bad.contains(&"封面图") && bad.contains(&"重新编码的音轨"), "{bad:?}");
+        (out.audio[0].channels, out.covers) = (2, Some(1));
+        let r = report(&src, &plan, &out, Lang::ZhCn);
+        let bad = labels(&r, false);
+        assert!(!bad.contains(&"封面图") && !bad.contains(&"重新编码的音轨"), "{bad:?}");
     }
 
     #[test]

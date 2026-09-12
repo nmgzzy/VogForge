@@ -51,7 +51,7 @@ export function TranscodeView() {
                     <div className="@min-[900px]:hidden">
                       <DecisionList result={result} />
                     </div>
-                    <ExpertPanel plan={plan} result={result} />
+                    <ExpertPanel media={media} plan={plan} result={result} />
                   </div>
                   <div className="hidden flex-col gap-4 @min-[900px]:sticky @min-[900px]:top-4 @min-[900px]:flex @min-[900px]:self-start">
                     <EstimateCard media={media} result={result} />

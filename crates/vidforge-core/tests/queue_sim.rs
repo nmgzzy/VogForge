@@ -368,7 +368,7 @@ impl Harness {
     }
 
     fn add(&self, media: &MediaInfo, plan: TranscodePlan) -> String {
-        self.queue.add(vec![QueueItem { media: media.clone(), plan }]).remove(0)
+        self.queue.add(vec![QueueItem { media: media.clone(), plan, date: None }]).remove(0)
     }
 
     fn job(&self, id: &str) -> Job {
@@ -821,6 +821,20 @@ fn the_source_file_is_never_overwritten() {
     let j = h.job(&id);
     assert!(j.output_path.ends_with("DJI_20260812_0142 (1).mkv"), "{}", j.output_path);
     assert!(messages(&j, EventLevel::Warn).iter().any(|w| w.contains("源文件不会被覆盖")));
+}
+
+/// 命名模板的 {date} 用加入队列时界面给出的本地日期，与预览一致；后端不再自己取（UTC 的）当天
+#[test]
+fn the_date_in_the_name_comes_from_the_queue_item() {
+    let mut h = Harness::new();
+    h.settings.naming_template = "{name}_{date}".into();
+    h.ready();
+    let m = sample("m-drone");
+    let item = QueueItem { media: m.clone(), plan: plan(&m, EncoderId::Libx265), date: Some("2020-02-02".into()) };
+    let id = h.queue.add(vec![item]).remove(0);
+    h.wait_status(&id, JobStatus::Done);
+    let out = h.job(&id).output_path;
+    assert!(out.contains("_2020-02-02."), "{out}");
 }
 
 #[test]

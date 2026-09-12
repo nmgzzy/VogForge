@@ -78,6 +78,27 @@ describe("DecisionList", () => {
 });
 
 describe("FpsControl", () => {
+  it("高于源的帧率档置灰，不提帧率；源帧率不在标准档里时单独列出", () => {
+    const m = media("m-bluray");
+    const { unmount } = render(<FpsControl media={m} plan={recommendPlan(m, "editing", caps)} />);
+    const opt = (name: RegExp) => screen.getByRole("option", { name }) as HTMLOptionElement;
+    expect(opt(/^23\.976 fps 推荐/).disabled).toBe(false);
+    expect(opt(/^60 fps（不提帧率）/).disabled).toBe(true);
+    unmount();
+
+    const odd: MediaInfo = { ...m, video: [{ ...m.video[0]!, fpsNominal: 17, fpsAvg: 17, isVfr: false }] };
+    const second = render(<FpsControl media={odd} plan={recommendPlan(odd, "editing", caps)} />);
+    expect(opt(/^17 fps 推荐/).disabled).toBe(false);
+    expect(opt(/^24 fps（不提帧率）/).disabled).toBe(true);
+    second.unmount();
+
+    // 源帧率读不出（0/0）：不封顶，推荐 30
+    const unknown: MediaInfo = { ...m, video: [{ ...m.video[0]!, fpsNominal: 0, fpsAvg: 0, isVfr: false }] };
+    render(<FpsControl media={unknown} plan={recommendPlan(unknown, "editing", caps)} />);
+    expect(opt(/^30 fps 推荐/).disabled).toBe(false);
+    expect(opt(/^120 fps$/).disabled).toBe(false);
+  });
+
   it("可变帧率源未开启转换时提示剪辑风险", () => {
     const m = media("m-iphone");
     const r = result("m-iphone", "archive");
@@ -111,8 +132,8 @@ describe("码率控制（更多参数）", () => {
     return { media, plan, result: evaluate(media, plan, caps) };
   };
   const renderExpert = () => {
-    const { plan, result } = selected();
-    const view = render(<ExpertPanel plan={plan} result={result} />);
+    const { media, plan, result } = selected();
+    const view = render(<ExpertPanel media={media} plan={plan} result={result} />);
     fireEvent.click(screen.getByRole("button", { name: /更多参数/ }));
     return view;
   };
@@ -133,11 +154,36 @@ describe("码率控制（更多参数）", () => {
     expect(rc.kind !== "quality" && Math.abs(rc.kbps - before / 1000)).toBeLessThanOrEqual(50);
 
     const { plan, result } = selected();
-    view.rerender(<ExpertPanel plan={plan} result={result} />);
+    view.rerender(<ExpertPanel media={selected().media} plan={plan} result={result} />);
     const input = screen.getByRole("textbox", { name: "目标码率" });
     fireEvent.change(input, { target: { value: "12.5" } });
     fireEvent.blur(input);
     expect(selected().plan.video.rateControl).toEqual({ kind: "bitrate", kbps: 12500 });
+  });
+
+  it("目标码率不高于源：输入更高的值拉回源码率，输入框同步显示实际值", () => {
+    useProject.getState().select("m-stream");
+    useProject.getState().setScenario("archive");
+    const view = renderExpert();
+    fireEvent.click(screen.getByRole("radio", { name: "目标码率" }));
+    let cur = selected();
+    view.rerender(<ExpertPanel media={cur.media} plan={cur.plan} result={cur.result} />);
+    expect(screen.getByText(/源 3\.4 Mbps/)).toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "目标码率" });
+    fireEvent.change(input, { target: { value: "50" } });
+    fireEvent.blur(input);
+    expect(selected().plan.video.rateControl).toEqual({ kind: "bitrate", kbps: 3400 });
+    cur = selected();
+    view.rerender(<ExpertPanel media={cur.media} plan={cur.plan} result={cur.result} />);
+    expect((screen.getByRole("textbox", { name: "目标码率" }) as HTMLInputElement).value).toBe("3.4");
+  });
+
+  it("附加参数会多出输出文件时整段不用，输入框下面给出原因", () => {
+    useProject.getState().patchPlan((p) => {
+      p.video.extraArgs = "-metadata title=My Video";
+    });
+    renderExpert();
+    expect(screen.getAllByText(/「Video」不属于任何选项/).length).toBeGreaterThan(0);
   });
 
   it("手选硬件编码器时两遍不可选，并说明原因", () => {
@@ -161,8 +207,8 @@ describe("码率控制（更多参数）", () => {
 
     useProject.getState().select("m-bluray");
     useProject.getState().setScenario("streaming");
-    const { plan, result } = selected();
-    const view = render(<ExpertPanel plan={plan} result={result} />);
+    const { media, plan, result } = selected();
+    const view = render(<ExpertPanel media={media} plan={plan} result={result} />);
     fireEvent.click(within(view.container).getByRole("button", { name: /更多参数/ }));
     fireEvent.click(within(view.container).getByRole("radio", { name: "标准化 -16 LUFS" }));
     const after = selected();

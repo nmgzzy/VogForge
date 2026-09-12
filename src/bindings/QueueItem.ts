@@ -5,4 +5,8 @@ import type { TranscodePlan } from "./TranscodePlan";
 /**
  * 加入队列的一项：界面上的素材与计划。命令由后端按计划重新生成，不信任前端的参数
  */
-export type QueueItem = { media: MediaInfo, plan: TranscodePlan, };
+export type QueueItem = { media: MediaInfo, plan: TranscodePlan, 
+/**
+ * 命名模板里 `{date}` 用的本地日期（YYYY-MM-DD），界面加入队列时给出，与预览一致。没有时用当天（UTC）
+ */
+date?: string, };

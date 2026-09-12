@@ -16,7 +16,11 @@ container: string, durationSec: number, sizeBytes: number,
 /**
  * 总码率 bps
  */
-bitrate: number, video: Array<VideoStream>, audio: Array<AudioStream>, subtitle: Array<SubtitleStream>, chapters: number, attachments: number, sourceHint: SourceHint, 
+bitrate: number, video: Array<VideoStream>, audio: Array<AudioStream>, subtitle: Array<SubtitleStream>, chapters: number, attachments: number, 
+/**
+ * MP4 / MOV 的封面图（attached_pic 视频流）张数，没有时为空。现在的命令不带封面，推荐理由与校验会标出
+ */
+covers?: number, sourceHint: SourceHint, 
 /**
  * 拍摄设备，如 "Apple iPhone 16 Pro"
  */

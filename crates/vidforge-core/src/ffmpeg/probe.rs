@@ -611,15 +611,15 @@ pub fn parse_media(path: &str, size: Option<u64>, outs: &ProbeOutputs) -> Result
     let mut video = Vec::new();
     let mut audio = Vec::new();
     let mut subtitle = Vec::new();
-    let mut attachments = 0u32;
+    let (mut attachments, mut covers) = (0u32, 0u32);
     for s in &streams {
         match s["codec_type"].as_str() {
-            // MP4 的封面图也是一条视频流，不算；首帧与包的采样对应第一条真实视频流（probe_file 按流序号选）
+            // MP4 的封面图也是一条视频流，单独计数；首帧与包的采样对应第一条真实视频流（probe_file 按流序号选）
             Some("video") if !is_attached_pic(s) => {
                 let first = video.is_empty();
                 video.push(video_stream(s, first_frame, &packets, first));
             }
-            Some("video") => attachments += 1,
+            Some("video") => covers += 1,
             Some("audio") => audio.push(audio_stream(s)),
             Some("subtitle") => subtitle.push(subtitle_stream(s)),
             Some("attachment") => attachments += 1,
@@ -654,6 +654,7 @@ pub fn parse_media(path: &str, size: Option<u64>, outs: &ProbeOutputs) -> Result
         subtitle,
         chapters: info["chapters"].as_array().map(|c| c.len() as u32).unwrap_or(0),
         attachments,
+        covers: (covers > 0).then_some(covers),
         source_hint,
         device,
         import_root: None,

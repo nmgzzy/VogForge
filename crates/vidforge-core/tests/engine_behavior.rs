@@ -231,6 +231,12 @@ fn bluray_streaming_lossless_fix_switches_to_mkv_and_copies_truehd() {
 fn downmix_of_71_uses_side_and_back_channels() {
     let f = downmix_filter(&media("m-bluray").audio[0]);
     assert!(f.contains("SL") && f.contains("BL") && f.contains("alimiter"), "{f}");
+    // pan 引用输入里没有的声道不报错而是静默忽略（实测）：布局对不上时改用默认矩阵，保证每个声道都混进去
+    let mut a = media("m-bluray").audio[0].clone();
+    for (layout, channels) in [("6.1", 7), ("7.1(wide)", 8), ("4.0", 4), ("quad", 4), ("", 6)] {
+        (a.channel_layout, a.channels) = (layout.into(), channels);
+        assert_eq!(downmix_filter(&a), "aformat=channel_layouts=stereo,alimiter=limit=0.97:level=false", "{layout}");
+    }
 }
 
 // ───────────────── 录屏：极端可变帧率 ─────────────────
@@ -315,6 +321,115 @@ fn no_upscaling_and_no_fps_increase() {
     assert!(!r.args.iter().any(|a| a.contains("scale=")), "放大了");
     assert_eq!(decision(&r, "分辨率").unwrap().severity, Severity::Tip);
     assert!(!r.args.iter().any(|a| a == "-r"), "帧率上限高于源时不应改帧率");
+}
+
+#[test]
+fn targets_never_exceed_the_source() {
+    let c = caps();
+    // 帧率：固定帧率的目标高于源时拉回源帧率，可变帧率源以名义帧率为准
+    for (id, source) in [("m-bluray", 24000.0 / 1001.0), ("m-iphone", 30.0), ("m-drone", 60000.0 / 1001.0)] {
+        let m = media(id);
+        let mut p = recommend_plan(&m, Scenario::Archive, &c);
+        p.video.fps = FpsPolicy::Cfr { fps: 120.0 };
+        assert_eq!(update_plan(p, &m, &c).video.fps, FpsPolicy::Cfr { fps: source }, "{id}");
+    }
+    // 源帧率读不出（0/0）时不封顶，推荐目标用 30；不合法的目标换成推荐值。绝不生成 -r 0
+    let mut unknown = media("m-drone");
+    (unknown.video[0].fps_nominal, unknown.video[0].fps_avg) = (0.0, 0.0);
+    assert_eq!(recommend_cfr_target(&unknown.video[0]), 30.0);
+    let mut p = recommend_plan(&unknown, Scenario::Editing, &c);
+    assert_eq!(p.video.fps, FpsPolicy::Cfr { fps: 30.0 });
+    p.video.fps = FpsPolicy::Cfr { fps: 60.0 };
+    let r = eval(&unknown, &update_plan(p.clone(), &unknown, &c), &c);
+    assert!(has(&r.args, &["-r", "60"]), "{:?}", r.args);
+    p.video.fps = FpsPolicy::Cfr { fps: 0.0 };
+    assert_eq!(update_plan(p, &unknown, &c).video.fps, FpsPolicy::Cfr { fps: 30.0 });
+
+    // 降帧率照常，理由里说明丢帧
+    let m = media("m-drone");
+    let mut p = recommend_plan(&m, Scenario::Archive, &c);
+    p.video.fps = FpsPolicy::Cfr { fps: 30.0 };
+    let r = eval(&m, &update_plan(p, &m, &c), &c);
+    assert_eq!(r.plan.video.fps, FpsPolicy::Cfr { fps: 30.0 });
+    let d = decision(&r, "帧率").unwrap();
+    assert!(d.reason.contains("降到 30 fps"), "{}", d.reason);
+
+    // 码率：平均码率不高于源视频码率，峰值不高于它的 1.5 倍；低于源的照常
+    let m = media("m-stream");
+    let source = (m.video[0].bitrate.unwrap() / 1000) as u32;
+    let with = |rc: RateControl| {
+        let mut p = recommend_plan(&m, Scenario::Archive, &c);
+        p.video.rate_control = rc;
+        update_plan(p, &m, &c)
+    };
+    assert_eq!(with(RateControl::Bitrate { kbps: 20_000 }).video.rate_control, RateControl::Bitrate { kbps: source });
+    assert_eq!(with(RateControl::TwoPass { kbps: 20_000 }).video.rate_control, RateControl::TwoPass { kbps: source });
+    assert_eq!(
+        with(RateControl::Capped { kbps: 20_000 }).video.rate_control,
+        RateControl::Capped { kbps: source * 3 / 2 }
+    );
+    assert_eq!(with(RateControl::Bitrate { kbps: 2000 }).video.rate_control, RateControl::Bitrate { kbps: 2000 });
+    let r = eval(&m, &with(RateControl::Bitrate { kbps: 20_000 }), &c);
+    let d = decision(&r, "码率").unwrap();
+    assert_eq!(d.severity, Severity::Tip);
+    assert!(d.reason.contains("不高于源视频码率"), "{}", d.reason);
+    assert!(has(&r.args, &["-b:v", &format!("{source}k")]), "{:?}", r.args);
+
+    // 源码率未知时只受输入范围约束
+    let mut unknown = media("m-stream");
+    (unknown.bitrate, unknown.video[0].bitrate) = (0, None);
+    let mut p = recommend_plan(&unknown, Scenario::Archive, &c);
+    p.video.rate_control = RateControl::Bitrate { kbps: 20_000 };
+    assert_eq!(update_plan(p, &unknown, &c).video.rate_control, RateControl::Bitrate { kbps: 20_000 });
+}
+
+#[test]
+fn reencoded_audio_never_exceeds_the_source() {
+    for m in samples() {
+        for s in ALL {
+            let r = run(&m, s);
+            for t in r.plan.audio.iter().filter(|t| t.action == StreamAction::Encode) {
+                let a = m.audio.iter().find(|a| a.index == t.source_index).unwrap();
+                if let Some(ch) = t.channels {
+                    assert!(ch <= a.channels, "{}/{s:?}: 声道 {} → {ch}", m.id, a.channels);
+                }
+                if let (Some(k), Some(b), false) = (t.bitrate_kbps, a.bitrate, a.lossless) {
+                    assert!(u64::from(k) <= (b / 1000).max(32), "{}/{s:?}: {b} → {k}k", m.id);
+                }
+            }
+        }
+    }
+    // 单声道 MP3 64k 发社交平台：转 AAC 仍是单声道 64k
+    let mut m = media("m-stream");
+    let a = &mut m.audio[0];
+    (a.codec, a.channels, a.channel_layout, a.bitrate) = ("mp3".into(), 1, "mono".into(), Some(64_000));
+    let r = run(&m, Scenario::Social);
+    let t = &r.plan.audio[0];
+    assert_eq!((t.codec, t.channels, t.bitrate_kbps), (Some(AudioCodec::Aac), Some(1), Some(64)));
+    assert!(!r.args.iter().any(|x| x.starts_with("-ac")), "单声道不升成立体声：{:?}", r.args);
+    // 四声道有损轨进 MP4：E-AC-3 保持四声道
+    let a = &mut m.audio[0];
+    (a.codec, a.channels, a.channel_layout, a.bitrate) = ("dts".into(), 4, "4.0".into(), Some(768_000));
+    let r = run(&m, Scenario::Streaming);
+    let t = r.plan.audio.iter().find(|t| t.codec == Some(AudioCodec::Eac3)).unwrap();
+    assert_eq!((t.channels, t.bitrate_kbps, t.title.as_deref()), (Some(4), Some(640), Some("DD+ 4ch")));
+}
+
+#[test]
+fn extra_args_that_would_add_outputs_are_not_used() {
+    let (m, c) = (media("m-drone"), caps());
+    let mut p = recommend_plan(&m, Scenario::Archive, &c);
+    p.video.extra_args = Some("-tune grain".into());
+    let r = eval(&m, &update_plan(p.clone(), &m, &c), &c);
+    assert!(has(&r.args, &["-tune", "grain"]), "{:?}", r.args);
+    assert!(decision(&r, "附加参数").is_none());
+    // 值里有空格却没加引号：Video 会变成又一个输出文件，整段不用并警告
+    p.video.extra_args = Some("-metadata title=My Video".into());
+    let r = eval(&m, &update_plan(p, &m, &c), &c);
+    assert!(!r.args.iter().any(|a| a == "Video" || a == "title=My"), "{:?}", r.args);
+    let d = decision(&r, "附加参数").unwrap();
+    assert_eq!(d.severity, Severity::Warn);
+    assert!(d.reason.contains("「Video」"), "{}", d.reason);
 }
 
 #[test]
@@ -810,12 +925,15 @@ fn bitrate_modes_shape_the_estimate_and_explanations() {
 
 #[test]
 fn bitrate_values_are_clamped_and_advice_follows_the_mode() {
-    let (m, c) = (media("m-stream"), caps());
-    let mut p = recommend_plan(&m, Scenario::Archive, &c);
+    // 输入范围 100k–400000k：相机素材 598 Mbps，上限落在输入范围而不是源码率上
+    let (camera, c) = (media("m-camera"), caps());
+    let mut p = recommend_plan(&camera, Scenario::Archive, &c);
     p.video.rate_control = RateControl::Bitrate { kbps: 5 };
-    assert_eq!(update_plan(p.clone(), &m, &c).video.rate_control, RateControl::Bitrate { kbps: 100 });
+    assert_eq!(update_plan(p.clone(), &camera, &c).video.rate_control, RateControl::Bitrate { kbps: 100 });
     p.video.rate_control = RateControl::Capped { kbps: 9_000_000 };
-    assert_eq!(update_plan(p.clone(), &m, &c).video.rate_control, RateControl::Capped { kbps: 400_000 });
+    assert_eq!(update_plan(p, &camera, &c).video.rate_control, RateControl::Capped { kbps: 400_000 });
+    let m = media("m-stream");
+    let mut p = recommend_plan(&m, Scenario::Archive, &c);
     // 已高度压缩的片源按目标码率编码：建议调低目标码率而不是画质档位
     p.video.rate_control = RateControl::Bitrate { kbps: 8000 };
     let r = eval(&m, &update_plan(p, &m, &c), &c);

@@ -521,13 +521,16 @@ fn cover_art_is_never_encoded_as_the_video() {
         &src_path.to_string_lossy(),
     ]);
     let src = e.probe(&src_path);
-    assert_eq!((src.video.len(), src.attachments), (1, 1), "封面图应算附件、不算视频流");
+    assert_eq!((src.video.len(), src.attachments, src.covers), (1, 0, Some(1)), "封面图单独计数、不算视频流");
     let plan = base_plan(EncoderId::Libx264, Container::Mkv);
     let (out, a) = e.transcode(&src, &plan, "no-cover.mkv");
     let map = format!("0:{}", src.video[0].index);
     assert!(a.windows(2).any(|w| w[0] == "-map" && w[1] == map), "应按流序号映射 {map}");
     assert_eq!(out.video.len(), 1);
     assert_eq!((out.video[0].width, out.video[0].height), (640, 360), "编码的是封面而不是正片");
+    // 现在的命令不带封面：校验要如实标出，免得报告全绿后源文件被移进回收站
+    let report = vidforge_core::verify::report(&src, &plan, &out, vidforge_core::i18n::Lang::ZhCn);
+    assert!(report.iter().any(|r| r.label == "封面图" && !r.ok), "{report:#?}");
 }
 
 #[test]

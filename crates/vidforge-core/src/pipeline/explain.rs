@@ -8,10 +8,11 @@ use crate::model::{
 };
 use crate::tr;
 
-use super::args::{display_size, target_dimensions};
+use super::args::{ExtraArgsIssue, display_size, downmix_is_tuned, extra_args_issue, split_args, target_dimensions};
 use super::encoders::{Family, codec_available, family, quality_meta, software_usable};
-use super::fps::is_extreme_vfr;
-use super::strategy::{prefer_hw_for, scenario_codec};
+use super::estimate::source_video_bps;
+use super::fps::{is_extreme_vfr, recommend_cfr_target};
+use super::strategy::{MAX_KBPS, MIN_KBPS, max_target_kbps, prefer_hw_for, scenario_codec};
 use super::text::{format_bitrate, format_fps, format_percent, plain, thousands};
 
 pub fn tier_label(t: QualityTier, lang: Lang) -> &'static str {
@@ -64,6 +65,21 @@ const TIME: (&str, &str) = ("耗时", "Time");
 const AUDIO: (&str, &str) = ("音频", "Audio");
 const LOUDNESS: (&str, &str) = ("响度", "Loudness");
 const DOWNMIX: (&str, &str) = ("降混", "Downmix");
+const EXTRA: (&str, &str) = ("附加参数", "Extra arguments");
+const COVER: (&str, &str) = ("封面", "Cover art");
+
+/// 源文件带封面图时的提醒：现在的命令不带封面（封面是一条特殊的视频流），完成后的校验会标出
+fn cover_note(out: &mut Out, media: &MediaInfo, lang: Lang) {
+    if let Some(n) = media.covers.filter(|n| *n > 0) {
+        let reason = tr!(
+            lang,
+            "源文件带 {} 张封面图，输出不会保留：封面图是一条特殊的视频流，这一版还没有处理。完成后的校验会标出这一项",
+            "The source has {} cover image(s) that the output will not keep: cover art is a special video stream this version does not handle yet. Verification will flag it",
+            n
+        );
+        out.push(COVER, pick(lang, "不保留", "Not kept"), reason, Severity::Warn);
+    }
+}
 
 pub fn explain(
     media: &MediaInfo,
@@ -92,6 +108,7 @@ pub fn explain(
             ),
         );
         out.add(CONTAINER, plan.container.ext().to_uppercase(), mkv_reason);
+        cover_note(&mut out, media, lang);
         return out.items;
     }
 
@@ -225,6 +242,19 @@ pub fn explain(
     let meta = quality_meta(vp.encoder);
     let quality = format!("{} · {} {}", tier_label(vp.quality, lang), meta.param, vp.quality_value);
     let mbps = |kbps: u32| format_bitrate(f64::from(kbps) * 1000.0);
+    // 目标码率被源视频码率封顶时补一句原因（不升档）
+    let top = max_target_kbps(media);
+    let source_note = |kbps: u32, reason: &str| -> Option<String> {
+        (kbps >= top && top > MIN_KBPS && top < MAX_KBPS).then(|| {
+            tr!(
+                lang,
+                "{}。目标码率不高于源视频码率（{}）：再高只会多占空间，画质不会更好",
+                "{}. The target never exceeds the source video bitrate ({}): a higher bitrate only takes more space without improving quality",
+                reason,
+                format_bitrate(source_video_bps(media))
+            )
+        })
+    };
     match vp.rate_control {
         RateControl::Quality => {
             let reason = if meta.lower_is_better {
@@ -262,22 +292,28 @@ pub fn explain(
             };
             out.add(QUALITY, value, reason);
         }
-        RateControl::Bitrate { kbps } => out.add(
-            BITRATE,
-            tr!(lang, "平均 {}", "Average {}", mbps(kbps)),
-            l(
+        RateControl::Bitrate { kbps } => {
+            let value = tr!(lang, "平均 {}", "Average {}", mbps(kbps));
+            let reason = l(
                 "按目标码率编码，体积可预测；画面复杂的片段画质会下降。追求画质稳定用恒定质量",
                 "Encodes to a target bitrate so the size is predictable; complex scenes lose quality. Use constant quality for consistent quality",
-            ),
-        ),
-        RateControl::TwoPass { kbps } => out.add(
-            BITRATE,
-            tr!(lang, "两遍 · 平均 {}", "Two-pass · average {}", mbps(kbps)),
-            l(
+            );
+            match source_note(kbps, reason) {
+                Some(note) => out.push(BITRATE, value, note, Severity::Tip),
+                None => out.add(BITRATE, value, reason),
+            }
+        }
+        RateControl::TwoPass { kbps } => {
+            let value = tr!(lang, "两遍 · 平均 {}", "Two-pass · average {}", mbps(kbps));
+            let reason = l(
                 "第一遍分析全片复杂度，第二遍按目标码率分配，体积准确、画质比单遍按码率编码更均匀；耗时约 1.7 倍",
                 "The first pass analyzes the whole video and the second distributes the bitrate, giving an accurate size and more even quality than single-pass bitrate mode; takes about 1.7× as long",
-            ),
-        ),
+            );
+            match source_note(kbps, reason) {
+                Some(note) => out.push(BITRATE, value, note, Severity::Tip),
+                None => out.add(BITRATE, value, reason),
+            }
+        }
     }
 
     // ── 位深 ──
@@ -432,7 +468,18 @@ pub fn explain(
         (FpsPolicy::Cfr { .. }, Some(fps)) => {
             let target = format_fps(fps.target_fps);
             let value = tr!(lang, "{} fps 固定", "Constant {} fps", target);
-            if v.is_vfr && is_extreme_vfr(v) {
+            let source = recommend_cfr_target(v);
+            if fps.dropped > 0 && fps.target_fps < source * (1.0 - 1e-9) {
+                let reason = tr!(
+                    lang,
+                    "从源的 {} fps 降到 {} fps，约丢弃 {} 帧：体积更小、编码更快，但运动画面不如原来流畅",
+                    "Lowered from the source's {} fps to {} fps, dropping about {} frames: smaller and faster to encode, but motion is less smooth",
+                    format_fps(source),
+                    target,
+                    thousands(fps.dropped)
+                );
+                out.add(FPS, value, reason);
+            } else if v.is_vfr && is_extreme_vfr(v) {
                 let pct = format_percent(fps.duplicated as f64 / fps.target_frames.max(1) as f64);
                 let reason = tr!(
                     lang,
@@ -484,6 +531,25 @@ pub fn explain(
                 "A keyframe about every 0.5 s makes scrubbing smoother in editors at a slightly larger size",
             ),
         );
+    }
+
+    // ── 附加参数 ──
+    if let Some(issue) = vp.extra_args.as_deref().and_then(|s| extra_args_issue(&split_args(s))) {
+        let reason = match issue {
+            ExtraArgsIssue::Output(arg) => tr!(
+                lang,
+                "「{}」不属于任何选项，ffmpeg 会把它当成又一个输出文件，并直接覆盖同名文件。这段附加参数没有使用；值里有空格时请加引号",
+                "'{}' belongs to no option, so ffmpeg would treat it as another output file and overwrite any file with that name. The extra arguments are not used; quote values that contain spaces",
+                arg
+            ),
+            ExtraArgsIssue::Managed(arg) => tr!(
+                lang,
+                "{} 由队列管理（输入、覆盖确认与进度），不能写在附加参数里。这段附加参数没有使用",
+                "{} is managed by the queue (input, overwrite and progress) and cannot go in the extra arguments. The extra arguments are not used",
+                arg
+            ),
+        };
+        out.push(EXTRA, l("未使用", "Not used"), reason, Severity::Warn);
     }
 
     // ── 耗时 ──
@@ -564,18 +630,35 @@ pub fn explain(
             out.add(LOUDNESS, tr!(lang, "{} LUFS（两遍）", "{} LUFS (two-pass)", target), reason);
         }
     }
-    if plan.audio.iter().any(|t| t.role == TrackRole::Compat && t.channels == Some(2))
-        && media.audio.iter().any(|a| a.channels > 2)
-    {
-        out.add(
-            DOWNMIX,
-            l("中置 +3dB", "Center +3 dB"),
-            l(
-                "多声道降为立体声时提升中置声道，对白更清楚，并用限幅器防止削波",
-                "Boosts the center channel when downmixing to stereo so dialogue is clearer, with a limiter to prevent clipping",
-            ),
-        );
+    let downmixed = plan
+        .audio
+        .iter()
+        .filter(|t| t.action == StreamAction::Encode && t.channels == Some(2))
+        .find_map(|t| media.audio.iter().find(|a| a.index == t.source_index && a.channels > 2));
+    if let Some(src) = downmixed {
+        if downmix_is_tuned(src) {
+            out.add(
+                DOWNMIX,
+                l("中置 +3dB", "Center +3 dB"),
+                l(
+                    "多声道降为立体声时提升中置声道，对白更清楚，并用限幅器防止削波",
+                    "Boosts the center channel when downmixing to stereo so dialogue is clearer, with a limiter to prevent clipping",
+                ),
+            );
+        } else {
+            let layout =
+                if src.channel_layout.is_empty() { format!("{}ch", src.channels) } else { src.channel_layout.clone() };
+            let reason = tr!(
+                lang,
+                "{} 声道布局没有专门调过的降混系数，用 ffmpeg 的默认矩阵，每个声道都会混进立体声",
+                "The {} layout has no tuned downmix, so ffmpeg's default matrix is used and every channel is mixed into stereo",
+                layout
+            );
+            out.add(DOWNMIX, l("默认矩阵", "Default matrix"), reason);
+        }
     }
+
+    cover_note(&mut out, media, lang);
 
     // ── 容器 ──
     match plan.container {

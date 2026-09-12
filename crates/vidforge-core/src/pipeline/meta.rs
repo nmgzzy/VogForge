@@ -8,7 +8,8 @@ use ts_rs::TS;
 use crate::model::{Codec, EncoderId, MediaInfo, QualityTier, RateControl, RateControlKind, Vendor};
 
 use super::encoders::{preset_options, quality_meta, quality_value, supports_rate_control, writes_hdr10};
-use super::fps::{STANDARD_FPS, is_extreme_vfr, recommend_cfr_target};
+use super::estimate::source_video_bps;
+use super::fps::{STANDARD_FPS, is_extreme_vfr, recommend_cfr_target, source_rate};
 use super::strategy::{MAX_KBPS, MIN_KBPS};
 
 /// 四个质量档位在某个编码器上的原生数值
@@ -59,15 +60,21 @@ pub struct EngineMeta {
     pub max_kbps: u32,
 }
 
-/// 帧率控件需要的、依赖素材的建议
+/// 帧率与码率控件需要的、依赖素材的建议
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct VideoHints {
-    /// 打开"转为固定帧率"时的推荐目标
+    /// 打开"转为固定帧率"时的推荐目标（源帧率读不出时为 30）
     pub recommended_fps: f64,
+    /// 固定帧率的上限，即源的帧率（不提帧率）；源帧率读不出时为空，不封顶
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_fps: Option<f64>,
     /// 帧率波动剧烈（录屏类），转 CFR 会复制大量帧
     pub extreme_vfr: bool,
+    /// 源视频码率（kbps），未知时为空。目标码率不会高于它
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_kbps: Option<u32>,
 }
 
 fn sample_of(kind: RateControlKind) -> RateControl {
@@ -118,7 +125,13 @@ pub fn engine_meta() -> EngineMeta {
 
 pub fn video_hints(media: &MediaInfo) -> Option<VideoHints> {
     let v = media.video.first()?;
-    Some(VideoHints { recommended_fps: recommend_cfr_target(v), extreme_vfr: is_extreme_vfr(v) })
+    let source = (source_video_bps(media) / 1000.0).floor() as u32;
+    Some(VideoHints {
+        recommended_fps: recommend_cfr_target(v),
+        max_fps: source_rate(v),
+        extreme_vfr: is_extreme_vfr(v),
+        source_kbps: (source > 0).then_some(source),
+    })
 }
 
 #[cfg(test)]

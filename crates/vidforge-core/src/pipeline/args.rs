@@ -45,18 +45,24 @@ pub fn target_dimensions(v: &VideoStream, preset: ResolutionPreset) -> Option<Di
     })
 }
 
-/// 多声道降混立体声。5.1 与 7.1 的声道名不同，`pan` 引用不存在的声道会直接报错，所以按布局分别生成。
-/// 中置提升约 3dB 让对白更清楚，alimiter 防止叠加后削波；LFE 不混入立体声
+/// 多声道降混立体声。声道名确切已知的 5.0 / 5.1 / 7.0 / 7.1（含 side 变体）用 pan 矩阵：中置提升约 3dB
+/// 让对白更清楚，LFE 不混入立体声。`pan` 引用输入里没有的声道不报错，而是静默忽略（技术事实文档 6.4），
+/// 矩阵与布局对不上就会整路丢掉环绕或中置左右声道，所以其余布局交给 `aformat` 触发的默认矩阵，每个声道都混进去。
+/// 两种写法都接 alimiter 防止叠加后削波
 pub fn downmix_filter(src: &AudioStream) -> String {
-    let layout = &src.channel_layout;
-    let expr = if src.channels >= 8 || layout.contains("7.1") {
-        "FL=0.707*FC+1.0*FL+0.6*BL+0.6*SL|FR=0.707*FC+1.0*FR+0.6*BR+0.6*SR"
-    } else if layout.contains("side") {
-        "FL=0.707*FC+1.0*FL+0.707*SL|FR=0.707*FC+1.0*FR+0.707*SR"
-    } else {
-        "FL=0.707*FC+1.0*FL+0.707*BL|FR=0.707*FC+1.0*FR+0.707*BR"
+    const LIMIT: &str = "alimiter=limit=0.97:level=false";
+    let expr = match src.channel_layout.as_str() {
+        "7.1" | "7.0" => "FL=0.707*FC+1.0*FL+0.6*BL+0.6*SL|FR=0.707*FC+1.0*FR+0.6*BR+0.6*SR",
+        "5.1(side)" | "5.0(side)" => "FL=0.707*FC+1.0*FL+0.707*SL|FR=0.707*FC+1.0*FR+0.707*SR",
+        "5.1" | "5.0" => "FL=0.707*FC+1.0*FL+0.707*BL|FR=0.707*FC+1.0*FR+0.707*BR",
+        _ => return format!("aformat=channel_layouts=stereo,{LIMIT}"),
     };
-    format!("pan=stereo|{expr},alimiter=limit=0.97:level=false")
+    format!("pan=stereo|{expr},{LIMIT}")
+}
+
+/// 降混用的是按布局调过系数的 pan 矩阵，而不是默认矩阵
+pub fn downmix_is_tuned(src: &AudioStream) -> bool {
+    downmix_filter(src).starts_with("pan=")
 }
 
 /// 硬件解码参数：解码后的帧自动下载到内存，软件滤镜与各家编码器都能接。Windows 上有 D3D11 设备时写
@@ -315,11 +321,74 @@ fn encoder_args(plan: &TranscodePlan, v: &VideoStream) -> Vec<String> {
     // 不写 -color_primaries / -color_trc：9.0 起这两个输出选项不生效，编码器取帧上的色彩属性
     // （技术事实文档 12 节）。保留 HDR 时解码出的帧自带标签；转 SDR 时由色调映射滤镜打 BT.709 标签
 
-    // 支持引号：-metadata title="My Video" 应是两个 argv，而不是按空白拆成三段
+    // 支持引号：-metadata title="My Video" 应是两个 argv，而不是按空白拆成三段。
+    // 会多出输入或输出的附加参数整段不用（explain 给出警告），见 extra_args_issue
     if let Some(extra) = vp.extra_args.as_deref() {
-        out.extend(split_args(extra));
+        let extra = split_args(extra);
+        if extra_args_issue(&extra).is_none() {
+            out.extend(extra);
+        }
     }
     out
+}
+
+/// 附加参数里不能用的写法。有这种写法时整段附加参数都不用，推荐理由里给出警告
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtraArgsIssue {
+    /// 不属于任何选项的位置参数：ffmpeg 会把它当成又一个输出文件，队列带 `-y` 运行，同名文件会被直接覆盖
+    Output(String),
+    /// 由队列管理的选项：输入、覆盖确认、进度输出
+    Managed(String),
+}
+
+/// 检查拆好的附加参数。以 `-` 开头的是选项，除少数开关外都带一个值，剩下的就是位置参数。
+/// 这是防误操作（值里有空格却忘了加引号、从别处粘来整条命令）的检查，不是完整的 ffmpeg 语法解析
+pub fn extra_args_issue(args: &[String]) -> Option<ExtraArgsIssue> {
+    // 不带值的开关；其余选项一律按带一个值处理
+    const FLAGS: &[&str] = &[
+        "-an",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-shortest",
+        "-copyts",
+        "-start_at_zero",
+        "-copyinkf",
+        "-bitexact",
+        "-autorotate",
+        "-noautorotate",
+        "-autoscale",
+        "-noautoscale",
+        "-xerror",
+        "-ignore_unknown",
+        "-copy_unknown",
+        "-stats",
+        "-nostats",
+        "-hide_banner",
+        "-nostdin",
+        "-benchmark",
+        "-benchmark_all",
+        "-vstats",
+        "-debug_ts",
+        "-report",
+        "-fix_sub_duration",
+    ];
+    const MANAGED: &[&str] = &["-i", "-y", "-n", "-progress"];
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a.len() < 2 || !a.starts_with('-') {
+            return Some(ExtraArgsIssue::Output(a.clone()));
+        }
+        // 流限定符不影响判断：-c:v、-metadata:s:a:0
+        let name = a.split(':').next().unwrap_or(a);
+        if MANAGED.contains(&name) {
+            return Some(ExtraArgsIssue::Managed(a.clone()));
+        }
+        if !FLAGS.contains(&name) {
+            it.next();
+        }
+    }
+    None
 }
 
 /// 把用户输入的附加参数拆成 argv（与前端 `splitArgs` 一致）：单引号完全字面，双引号内只认 `\"` 与 `\\`，
@@ -553,7 +622,7 @@ pub fn build_arg_segments_measured(
             if !af.is_empty() {
                 audio.extend([format!("-filter:a:{i}"), af.join(",")]);
             }
-            // pan 已确定声道布局，之后不能再加 -ac，否则会被二次重混
+            // 降混滤镜已确定声道布局，之后不能再加 -ac，否则会被二次重混
             if let (false, Some(ch), Some(s)) = (use_pan, t.channels, src) {
                 if s.channels != ch {
                     audio.extend([format!("-ac:a:{i}"), ch.to_string()]);
@@ -631,6 +700,22 @@ pub fn flatten(segs: &[ArgSegment]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_args_that_add_inputs_or_outputs_are_rejected() {
+        let issue = |s: &str| extra_args_issue(&split_args(s));
+        assert_eq!(issue("-tune grain -x265-params aq-mode=3"), None);
+        assert_eq!(issue(r#"-metadata:s:a:0 title="My Video" -an -g 48"#), None);
+        assert_eq!(
+            issue("-metadata title=My Video"),
+            Some(ExtraArgsIssue::Output("Video".into())),
+            "值有空格却没加引号"
+        );
+        assert_eq!(issue("-c:a aac out.mp4"), Some(ExtraArgsIssue::Output("out.mp4".into())));
+        assert_eq!(issue("-shortest -"), Some(ExtraArgsIssue::Output("-".into())), "输出到标准输出");
+        assert_eq!(issue("-i cover.jpg"), Some(ExtraArgsIssue::Managed("-i".into())));
+        assert_eq!(issue("-g 24 -y"), Some(ExtraArgsIssue::Managed("-y".into())));
+    }
 
     #[test]
     fn split_args_matches_frontend_rules() {

@@ -190,8 +190,11 @@ fn a_batch_of_ten_synthetic_clips_runs_through_the_real_queue() {
         Scenario::Archive,
         Scenario::Archive,
     ];
-    let mut items: Vec<QueueItem> =
-        media.iter().zip(scenarios).map(|(m, s)| QueueItem { media: m.clone(), plan: fast(m, s, &caps) }).collect();
+    let mut items: Vec<QueueItem> = media
+        .iter()
+        .zip(scenarios)
+        .map(|(m, s)| QueueItem { media: m.clone(), plan: fast(m, s, &caps), date: None })
+        .collect();
     // 第 9 个两遍编码，第 10 个换成 x264 目标码率
     items[8].plan.video.rate_control = RateControl::TwoPass { kbps: 800 };
     items[9].plan = switch_encoder(items[9].plan.clone(), EncoderId::Libx264, &media[9], &caps);
@@ -236,7 +239,7 @@ fn cancel_pause_and_hardware_fallback_on_real_processes() {
     // ── 暂停：进度停住；继续：接着跑 ──
     let mut slow = recommend_plan(&long, Scenario::Archive, &caps);
     slow.video.preset = "medium".into();
-    let paused = q.add(vec![QueueItem { media: long.clone(), plan: slow.clone() }]).remove(0);
+    let paused = q.add(vec![QueueItem { media: long.clone(), plan: slow.clone(), date: None }]).remove(0);
     let progressed = |id: &str| sink.progress.lock().unwrap().iter().filter(|p| p.id == id).count();
     wait_until("开始有进度", Duration::from_secs(60), || progressed(&paused) >= 2);
     q.apply(QueueOp::Pause { id: paused.clone() }).unwrap();
@@ -267,7 +270,7 @@ fn cancel_pause_and_hardware_fallback_on_real_processes() {
     let short = e.synth("short.mp4", &["-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2", "-c:v", "libx264"]);
     let nvenc =
         switch_encoder(recommend_plan(&short, Scenario::Streaming, &pretend), EncoderId::HevcNvenc, &short, &pretend);
-    let id = q.add(vec![QueueItem { media: short, plan: nvenc }]).remove(0);
+    let id = q.add(vec![QueueItem { media: short, plan: nvenc, date: None }]).remove(0);
     assert!(q.wait_idle(Duration::from_secs(120)));
     let j = job(&q, &id);
     assert_eq!(j.status, JobStatus::Done, "{:#?}", j.events);
@@ -308,7 +311,7 @@ fn loudness_normalization_reaches_the_target_through_the_queue() {
     plan.loudnorm = true;
     let q = e.queue(Arc::new(Sink::default()));
     q.set_environment(caps, e.settings());
-    let id = q.add(vec![QueueItem { media: quiet, plan }]).remove(0);
+    let id = q.add(vec![QueueItem { media: quiet, plan, date: None }]).remove(0);
     assert!(q.wait_idle(Duration::from_secs(120)));
     let j = job(&q, &id);
     assert_eq!(j.status, JobStatus::Done, "{:#?}", j.events);
@@ -358,7 +361,7 @@ fn long_job_keeps_bounded_state() {
     let q = e.queue(sink.clone());
     q.set_environment(caps, e.settings());
     let started = Instant::now();
-    let id = q.add(vec![QueueItem { media: long, plan }]).remove(0);
+    let id = q.add(vec![QueueItem { media: long, plan, date: None }]).remove(0);
     assert!(q.wait_idle(Duration::from_secs(1800)));
     let j = job(&q, &id);
     assert_eq!(j.status, JobStatus::Done, "{:#?}", j.events);
@@ -408,7 +411,7 @@ master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000
             }
             plan.video.bit_depth = 10;
             plan.fidelity.hdr10 = true;
-            QueueItem { media: src.clone(), plan }
+            QueueItem { media: src.clone(), plan, date: None }
         })
         .collect();
     let q = e.queue(Arc::new(Sink::default()));

@@ -14,6 +14,7 @@ VidForge：Windows / macOS 桌面视频转码工具，后端调用系统 ffmpeg�
 
 ```bash
 pnpm tauri dev                                  # 桌面应用（会先启动 vite）
+pnpm tauri build --bundles nsis                 # Windows 安装包 → target/release/bundle/nsis/
 pnpm dev                                        # 只起前端：http://localhost:1420，strictPort，用 mock 后端
 pnpm test                                       # 前端 vitest
 pnpm vitest run src/lib/engine.test.ts          # 单个文件
@@ -84,7 +85,10 @@ ffmpeg 报错不直接给用户看：`ffmpeg/errors.rs` 按规则表生成原因
 - `-c:a opus` 是 ffmpeg 自带的实验性编码器，不加 `-strict -2` 直接失败；音频编码器名走 `AudioCodec::encoder()`（Opus → libopus），`name()` 是 ffprobe 报的格式名。
 - `wasm-bindgen` 依赖锁定为 `=0.2.128`，必须与本机 `wasm-bindgen-cli` 版本一致，否则 `pnpm wasm` 生成的胶水代码与 wasm 不匹配。
 - 复制命令用的 `quoteArg`（`src/lib/format.ts`）默认面向 PowerShell：逗号是数组运算符、行首 `@` 是 splatting，所以 `SAFE_ARG` 刻意不含这两个字符，不要放宽。
-- 用户填写的附加参数用 `splitArgs` 解析，支持引号，不要改回按空格拆分。
+- 用户填写的附加参数用 `splitArgs` 解析，支持引号，不要改回按空格拆分。出现位置参数或 `-i` / `-y` / `-n` / `-progress` 时整段不用（`args::extra_args_issue`），不要放宽：队列带 `-y` 运行，多出来的输出会直接覆盖同名文件。
+- 不升档规则在引擎里：`normalize_plan` 把固定帧率与目标码率拉回源的水平（`strategy::max_target_kbps`），`build_audio_tracks` 给重新编码的音轨码率与声道封顶。界面置灰只是提示，引擎才是最后一道。
+- 降混的 `pan` 引用输入里没有的声道不报错而是静默丢掉，矩阵只用在确切已知的布局上（`args::downmix_filter`），其余走 `aformat=channel_layouts=stereo`（技术事实文档 6.4）。
+- 加入队列的 `QueueItem` 要带 `date: today()`（本地日期）；后端的 `output::today()` 是 UTC，只作没有日期时的兜底。
 - 布局按容器宽度响应（Tailwind v4 的 `@container` 与 `@min-[900px]:`），不是按视口宽度。
 - Windows 上启动子进程一律经过 `ffmpeg::exec::command`，它设置了 `CREATE_NO_WINDOW`，否则发布版每次调用 ffmpeg 都会闪一个控制台窗口。
 - 开发机的 ffmpeg 是 9.0.1 gyan full，位于 `C:\Program1\ffmpeg\bin`，只在注册表 PATH 里，从 Git Bash 启动的进程看不到，定位时靠注册表那一步找到。

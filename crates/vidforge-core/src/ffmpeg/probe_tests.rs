@@ -235,7 +235,7 @@ fn cover_art_before_the_real_video_is_skipped() {
         parse_media("movie.mp4", None, &ProbeOutputs { info_json: COVER_FIRST.into(), ..Default::default() }).unwrap();
     assert_eq!(m.video.len(), 1);
     assert_eq!((m.video[0].codec.as_str(), m.video[0].width), ("hevc", 3840));
-    assert_eq!(m.attachments, 1);
+    assert_eq!((m.attachments, m.covers), (0, Some(1)), "封面图单独计数，不算附件");
 }
 
 #[test]

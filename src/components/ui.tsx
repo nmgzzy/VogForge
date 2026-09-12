@@ -303,8 +303,8 @@ export function Field({
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-xs font-medium text-muted">{label}</span>
-        {hint && <span className="truncate text-[11px] text-subtle">{hint}</span>}
+        <span className="shrink-0 text-xs font-medium text-muted">{label}</span>
+        {hint && <span title={typeof hint === "string" ? hint : undefined} className="truncate text-[11px] text-subtle">{hint}</span>}
       </div>
       {children}
     </div>

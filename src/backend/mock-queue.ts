@@ -71,7 +71,7 @@ export class MockQueue {
   }
 
   add(items: QueueItem[]): string[] {
-    const fresh = items.map(({ media, plan }) => makeJob(media, plan, this.settings()));
+    const fresh = items.map(({ media, plan, date }) => makeJob(media, plan, this.settings(), undefined, date));
     this.list.push(...fresh);
     this.publish();
     return fresh.map((j) => j.id);

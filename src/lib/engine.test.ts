@@ -56,7 +56,7 @@ describe("WebAssembly 决策引擎", () => {
   });
 
   it("帧率建议：录屏名义 60、平均很低，推荐 60 并标记为极端可变帧率", () => {
-    expect(videoHints(media("m-screen"))).toEqual({ recommendedFps: 60, extremeVfr: true });
+    expect(videoHints(media("m-screen"))).toEqual({ recommendedFps: 60, maxFps: 60, extremeVfr: true, sourceKbps: 3480 });
     expect(videoHints(media("m-drone"))?.extremeVfr).toBe(false);
   });
 

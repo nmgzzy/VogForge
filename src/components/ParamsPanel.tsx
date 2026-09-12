@@ -8,7 +8,7 @@ import { encoderMeta, engineMeta, videoHints } from "@/lib/engine";
 import { channelLabel, formatBitrate, formatFps } from "@/lib/format";
 import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
-import { Badge, Field, Section, Segmented, Select, Switch } from "./ui";
+import { Badge, Field, Section, Segmented, Select, Switch, type SelectOption } from "./ui";
 
 const qualityOptions = (): { value: QualityTier; label: string }[] => [
   { value: "lossless", label: tr("视觉无损", "Lossless") },
@@ -18,6 +18,24 @@ const qualityOptions = (): { value: QualityTier; label: string }[] => [
 ];
 
 const RESOLUTIONS = ["2160", "1440", "1080", "720", "480"] as const;
+
+/** 帧率档：标准档，加上不在标准档里的推荐值；高于源的档置灰（不提帧率），源帧率读不出时不封顶 */
+function fpsOptions(recommended: number, max: number | undefined): SelectOption[] {
+  const rows = engineMeta().standardFps.map((s) => ({ value: s.value, label: s.label }));
+  if (!rows.some((r) => Math.abs(r.value - recommended) < 1e-6))
+    rows.push({ value: recommended, label: formatFps(recommended) });
+  rows.sort((a, b) => a.value - b.value);
+  return rows.map((r) => {
+    const above = max !== undefined && r.value > max * (1 + 1e-9);
+    const suffix =
+      Math.abs(r.value - recommended) < 1e-6
+        ? tr(" 推荐", " (recommended)")
+        : above
+          ? tr("（不提帧率）", " (above source)")
+          : "";
+    return { value: String(r.value), label: `${r.label} fps${suffix}`, disabled: above };
+  });
+}
 
 /** 帧率：一行开关 + 目标帧率 + 帧数变化；只在需要时多一行提示 */
 export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: TranscodePlan; insight?: FpsInsight }) {
@@ -82,10 +100,7 @@ export function FpsControl({ media, plan, insight }: { media: MediaInfo; plan: T
                   p.video.fps = { kind: "cfr", fps: Number(val) };
                 })
               }
-              options={engineMeta().standardFps.map((s) => ({
-                value: String(s.value),
-                label: `${s.label} fps${Math.abs(s.value - recommended) < 1e-6 ? tr(" 推荐", " (recommended)") : ""}`,
-              }))}
+              options={fpsOptions(recommended, hints.maxFps)}
             />
             {insight && (
               <span

@@ -42,6 +42,8 @@ struct Prepared {
     plan: TranscodePlan,
     env: Environment,
     caps: Capabilities,
+    /// 命名模板里 `{date}` 用的日期
+    date: String,
 }
 
 pub(super) fn run(inner: Arc<Inner>, id: String) {
@@ -64,7 +66,8 @@ fn prepare(inner: &Inner, id: &str) -> Option<Prepared> {
     let job = s.job_mut(id)?;
     let plan = update_plan(job.plan.clone(), &job.media, &caps);
     job.plan = plan.clone();
-    Some(Prepared { media: job.media.clone(), plan, env, caps })
+    let date = job.date.clone().unwrap_or_else(crate::output::today);
+    Some(Prepared { media: job.media.clone(), plan, env, caps, date })
 }
 
 fn cancelled(inner: &Inner, id: &str) -> bool {
@@ -87,7 +90,7 @@ fn stop(inner: &Inner, id: &str, temp: &Path, lang: Lang) {
 }
 
 fn execute(inner: &Inner, id: &str, p: Prepared) {
-    let Prepared { media, plan, env, caps } = p;
+    let Prepared { media, plan, env, caps, date } = p;
     let ffmpeg = PathBuf::from(&caps.ffmpeg_path);
     let conflict = env.settings.conflict;
     let lang = env.settings.language;
@@ -97,7 +100,7 @@ fn execute(inner: &Inner, id: &str, p: Prepared) {
 
     // ── 输出位置 ──
     // 源文件本身、别的任务正在写的目标都不能写：在队列状态里原子地选定并登记，避免两个同名任务写同一个临时文件
-    let desired = crate::output::output_path(&media, &plan, &env.settings, &crate::output::today());
+    let desired = crate::output::output_path(&media, &plan, &env.settings, &date);
     let source = PathBuf::from(&media.path);
     let target = {
         let mut s = inner.lock();

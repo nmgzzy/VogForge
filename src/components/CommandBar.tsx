@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, ChevronsDownUp, ChevronsUpDown, Copy, ListPlus, SquareTerminal } from "lucide-react";
 import { tr } from "@/i18n";
 import type { MediaInfo, PlanResult, SegmentKind, TranscodePlan } from "@/lib/types";
+import { today } from "@/lib/engine";
 import { argsToCommand, quoteArg } from "@/lib/format";
 import { useEngineCaps } from "@/stores/engine-caps";
 import { useProject } from "@/stores/project";
@@ -82,12 +83,12 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
   };
 
   const addOne = () => {
-    enqueue([{ media, plan }]);
+    enqueue([{ media, plan, date: today() }]);
     setQueued(tr("已加入队列", "Added"));
     window.setTimeout(() => setQueued(undefined), 2200);
   };
   const addAll = () => {
-    enqueue(files.map((f) => ({ media: f, plan: plans[f.id]! })).filter((x) => x.plan));
+    enqueue(files.map((f) => ({ media: f, plan: plans[f.id]!, date: today() })).filter((x) => x.plan));
     setView("queue");
   };
 
@@ -218,8 +219,8 @@ export function CommandBar({ media, plan, result }: { media: MediaInfo; plan: Tr
             {tr("实际执行时写入 ", "Encoding writes to a ")}
             <code className="font-mono">.vidforge-part</code>
             {tr(
-              " 临时文件，校验通过后才改名为上面的最终文件名。",
-              " temporary file that is renamed to the final name above only after verification.",
+              " 临时文件，编码成功后改名为上面的最终文件名，再用 ffprobe 逐项校验。",
+              " temporary file that is renamed to the final name above once encoding succeeds, then checked item by item with ffprobe.",
             )}
           </p>
         </div>
