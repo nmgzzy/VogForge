@@ -226,6 +226,9 @@ pub struct ImportResult {
     pub failures: Vec<ImportFailure>,
     /// 文件夹里扩展名不像视频、被跳过的文件数
     pub skipped: u32,
+    /// 被跳过的文件的扩展名（小写、带点；没有扩展名时为空串），界面据此说明跳过了什么
+    #[serde(default)]
+    pub skipped_exts: Vec<String>,
 }
 
 /// 导入进度事件

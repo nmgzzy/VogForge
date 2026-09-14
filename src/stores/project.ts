@@ -13,6 +13,10 @@ export interface ImportReport {
   added: number;
   /** 已在列表里、没有重复添加的文件数 */
   duplicate: number;
+  /** 被跳过的文件的扩展名 */
+  skippedExts?: string[];
+  /** 这次导入的路径（文件或文件夹），空结果时告诉用户扫的是哪里 */
+  paths?: string[];
 }
 
 interface ProjectState {
@@ -79,12 +83,13 @@ export const useProject = create<ProjectState>((set, get) => ({
       return;
     }
     set({ importing: true, importProgress: undefined, importReport: undefined });
-    const total: ImportReport = { failures: [], skipped: 0, added: 0, duplicate: 0 };
+    const total: ImportReport = { failures: [], skipped: 0, added: 0, duplicate: 0, skippedExts: [], paths: [] };
     let firstNew: string | undefined;
     const off = backend.onImportProgress((importProgress) => set({ importProgress }));
     try {
       for (let batch = paths; batch.length > 0; batch = pendingImports.splice(0)) {
         set({ importQueued: pendingImports.length });
+        total.paths!.push(...batch);
         try {
           const r = await backend.importMedia(batch);
           const known = new Set(get().files.map((f) => f.id));
@@ -93,6 +98,7 @@ export const useProject = create<ProjectState>((set, get) => ({
           firstNew ??= fresh[0]?.id;
           total.failures.push(...r.failures);
           total.skipped += r.skipped;
+          for (const e of r.skippedExts ?? []) if (!total.skippedExts!.includes(e)) total.skippedExts!.push(e);
           total.added += fresh.length;
           total.duplicate += r.media.length - fresh.length;
         } catch (e) {
@@ -101,7 +107,9 @@ export const useProject = create<ProjectState>((set, get) => ({
       }
     } finally {
       off();
-      const worthTelling = total.failures.length > 0 || total.skipped > 0 || total.duplicate > 0;
+      // 一个都没加进来（例如空文件夹）也要告诉用户，不能表现成点了没反应
+      const worthTelling =
+        total.failures.length > 0 || total.skipped > 0 || total.duplicate > 0 || total.added === 0;
       set({
         importing: false,
         importProgress: undefined,

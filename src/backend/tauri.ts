@@ -20,6 +20,7 @@ import type { Backend } from "./types";
 const VIDEO_EXTENSIONS = [
   "mp4", "m4v", "mov", "mkv", "webm", "avi", "ts", "m2ts", "mts", "mxf", "wmv", "flv", "3gp", "mpg", "mpeg", "vob",
   "hevc", "h265", "h264", "ivf",
+  "rmvb", "rm", "f4v", "asf", "3g2", "ogv", "m2t", "m2v", "divx", "dv", "mod", "tod", "mk3d", "insv", "360",
 ];
 
 /** 把 Tauri 异步的订阅包装成同步返回的取消函数，组件卸载早于订阅完成时也不会泄漏 */

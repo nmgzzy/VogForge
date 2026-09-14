@@ -6,4 +6,8 @@ export type ImportResult = { media: Array<MediaInfo>, failures: Array<ImportFail
 /**
  * 文件夹里扩展名不像视频、被跳过的文件数
  */
-skipped: number, };
+skipped: number, 
+/**
+ * 被跳过的文件的扩展名（小写、带点；没有扩展名时为空串），界面据此说明跳过了什么
+ */
+skippedExts: Array<string>, };

@@ -1,6 +1,6 @@
 //! 文件导入：展开拖入的文件与文件夹（递归、按扩展名过滤），再并行调用 ffprobe 分析。
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, DirEntry};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -15,6 +15,8 @@ use crate::util::par_map;
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "ts", "m2ts", "mts", "mxf", "wmv", "flv", "3gp", "mpg", "mpeg", "vob",
     "hevc", "h265", "h264", "ivf",
+    // 老片源与各类设备：RealMedia、Flash MP4、ASF、Ogg、DV、JVC 摄像机（MOD / TOD）、Insta360、GoPro MAX
+    "rmvb", "rm", "f4v", "asf", "3g2", "ogv", "m2t", "m2v", "divx", "dv", "mod", "tod", "mk3d", "insv", "360",
 ];
 
 pub fn is_video_file(p: &Path) -> bool {
@@ -62,6 +64,8 @@ pub struct Expanded {
     pub entries: Vec<Entry>,
     /// 文件夹里扩展名不像视频的文件数
     pub skipped: u32,
+    /// 被跳过的文件的扩展名（小写、带点；没有扩展名时为空串）
+    pub skipped_exts: BTreeSet<String>,
     /// 不存在的路径、读不了的文件夹，及原因
     pub errors: Vec<ImportFailure>,
 }
@@ -114,6 +118,8 @@ fn walk(dir: &Path, root: &Path, out: &mut Expanded, seen: &mut HashSet<PathBuf>
         } else if ft.is_file() {
             if !is_video_file(&path) {
                 out.skipped += 1;
+                let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy().to_ascii_lowercase()));
+                out.skipped_exts.insert(ext.unwrap_or_default());
             } else if seen.insert(path.clone()) {
                 out.entries.push(Entry { path, root: Some(root.to_path_buf()) });
             }
@@ -154,7 +160,12 @@ pub fn import_paths(
         |_| {},
     );
 
-    let mut result = ImportResult { skipped: expanded.skipped, failures: expanded.errors, ..Default::default() };
+    let mut result = ImportResult {
+        skipped: expanded.skipped,
+        skipped_exts: expanded.skipped_exts.into_iter().collect(),
+        failures: expanded.errors,
+        ..Default::default()
+    };
     for r in results {
         match r {
             Ok(m) => result.media.push(m),
@@ -194,7 +205,20 @@ mod tests {
         assert_eq!(names(&e), ["a.MP4", "b.mkv", "c.mov"]);
         assert!(e.entries.iter().all(|x| x.root.as_deref() == Some(d)));
         assert_eq!(e.skipped, 2, "notes.txt 与 thumb.jpg 被跳过");
+        assert_eq!(e.skipped_exts.iter().map(String::as_str).collect::<Vec<_>>(), [".jpg", ".txt"]);
         assert!(e.errors.is_empty());
+    }
+
+    #[test]
+    fn formats_common_in_the_wild_are_recognized() {
+        // 下载站的 RealMedia 与 Flash MP4、JVC 摄像机、Insta360、GoPro MAX：扩展名不在表里就会被当成非视频跳过
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.rmvb", "b.f4v", "c.MOD", "d.insv", "e.360", "f.asf"] {
+            touch(&dir.path().join(name));
+        }
+        let e = expand_paths(&[dir.path().to_path_buf()], Lang::ZhCn);
+        assert_eq!(names(&e), ["a.rmvb", "b.f4v", "c.MOD", "d.insv", "e.360", "f.asf"]);
+        assert_eq!(e.skipped, 0);
     }
 
     #[test]

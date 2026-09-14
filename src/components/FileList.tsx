@@ -117,11 +117,18 @@ function FileCard({ m, selected, onSelect }: { m: MediaInfo; selected: boolean; 
 /** 导入结果：有失败才醒目，只有跳过或重复时保持安静 */
 export function ImportReportCard({ report, onClose }: { report: ImportReport; onClose: () => void }) {
   const failed = report.failures.length;
+  // 与具体文件无关的失败（例如还没有可用的 ffprobe）：标题直接说无法导入
+  const general = failed > 0 && report.failures.every((f) => !f.path);
+  const exts = (report.skippedExts ?? []).map((e) => e || tr("无扩展名", "no extension"));
+  const extList = exts.length > 0 ? tr(`（${exts.join("、")}）`, ` (${exts.join(", ")})`) : "";
+  const where = (report.paths ?? []).map(baseName).join(tr("、", ", "));
   const facts = [
     report.added > 0 && tr(`已添加 ${report.added} 个`, `${report.added} added`),
     report.duplicate > 0 && tr(`${report.duplicate} 个已在列表中`, `${report.duplicate} already in the list`),
-    report.skipped > 0 && tr(`跳过 ${report.skipped} 个非视频文件`, `${report.skipped} non-video file(s) skipped`),
+    report.skipped > 0 && tr(`跳过 ${report.skipped} 个非视频文件`, `${report.skipped} non-video file(s) skipped`) + extList,
   ].filter(Boolean);
+  if (failed === 0 && facts.length === 0)
+    facts.push(where ? tr(`${where} 里没有找到视频文件`, `No video files were found in ${where}`) : tr("没有找到视频文件", "No video files were found"));
   return (
     <div
       role={failed ? "alert" : "status"}
@@ -134,7 +141,9 @@ export function ImportReportCard({ report, onClose }: { report: ImportReport; on
         {failed > 0 && <AlertTriangle className="mt-px size-3.5 shrink-0 text-danger" />}
         <div className="min-w-0 flex-1">
           {failed > 0 && (
-            <p className="font-medium text-danger">{tr(`${failed} 个文件无法分析`, `${failed} file(s) could not be analyzed`)}</p>
+            <p className="font-medium text-danger">
+              {general ? tr("无法导入", "Could not import") : tr(`${failed} 个文件无法分析`, `${failed} file(s) could not be analyzed`)}
+            </p>
           )}
           {facts.length > 0 && <p className={cn(failed > 0 && "mt-0.5 text-muted")}>{facts.join(tr("，", ", "))}</p>}
         </div>
@@ -209,7 +218,13 @@ export function FileList() {
   };
   const addFolder = async () => {
     if (!desktop) return loadDemo();
-    const dir = await backend.pickDirectory(tr("添加文件夹（会递归扫描子文件夹）", "Add a folder (subfolders are scanned too)"));
+    // 对话框里选中手机、库这类没有文件系统路径的位置时拿不到路径，只能在标题里提前说明
+    const dir = await backend.pickDirectory(
+      tr(
+        "添加文件夹（会扫描子文件夹；手机等设备里的视频请先拷到电脑上）",
+        "Add a folder (subfolders are scanned; copy videos off phones and other devices first)",
+      ),
+    );
     if (dir) void importPaths([dir]);
   };
 

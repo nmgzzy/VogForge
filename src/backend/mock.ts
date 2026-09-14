@@ -54,7 +54,7 @@ export const mockBackend: Backend = {
     return { ...settings };
   },
   importMedia: async (paths) => {
-    const result: ImportResult = { media: [], failures: [], skipped: 0 };
+    const result: ImportResult = { media: [], failures: [], skipped: 0, skippedExts: [] };
     paths.forEach((path, i) => {
       const sample = MOCK_MEDIA.find((m) => m.path === path || m.name === path);
       if (sample) result.media.push(sample);
