@@ -651,6 +651,7 @@ VidForge 生成的写法（`pipeline/args.rs` 的 `rate_args`）。码率单位 
 - 9.0 的命令行对 libx264 / libx265 / libsvtav1 统一处理 `-passlogfile`，libx265 不必另用 `-x265-stats`（两者都能用）。
 - 第一遍必须看到与第二遍完全相同的帧：同样的滤镜、`-fps_mode:v cfr -r`、尾部补齐；只编码视频，输出 `-f null -`。
 - NVENC 的 `-cq` 必须配 `-rc vbr -b:v 0`，否则会被 bitrate 约束。
+- **AV1 硬件编码器的质量刻度与同家族的 H.264 / HEVC 不同**，ffmpeg 原样交给驱动、不做换算。[实测] `ffmpeg -h encoder=…`：`av1_nvenc` 的 `-cq` 是 0–63，`hevc_nvenc` / `h264_nvenc` 是 0–51；`av1_amf` 的 `-qp_i` / `-qp_p` 是 0–255（qindex），`hevc_amf` 是 0–51。[源码] `nvenc.c` 把 `cq` 转成 8.8 定点的 `targetQuality`，没有按编码格式区分。把 HEVC 刻度的数值给 AV1 硬件编码器会接近无损、体积与源相当（用户在 RTX 4070 上遇到过）。`av1_qsv` 例外：[源码] `qsvenc.c` 对所有格式都把 `global_quality` 裁到 1–51（ICQ）；[实测] 取 60 与 120 输出完全相同。同一段加噪 1080p 测试图上 `av1_qsv` 与 `hevc_qsv` 都取 24，码率分别是 14.9 与 9.6 Mbps。
 - VideoToolbox 的 `-q:v` 仅 Apple Silicon 可用，Intel Mac 报 `qscale not available for encoder`。
 - **不存在跨编码器的统一质量刻度**。界面上的质量档位必须按编码器分别映射，并标注不等价。
 

@@ -37,6 +37,13 @@ pub fn quality_value(id: EncoderId, tier: QualityTier) -> i32 {
         Standard => standard,
         Small => small,
     };
+    // AV1 硬件编码器的刻度与同家族的 H.264 / HEVC 不同，ffmpeg 原样交给驱动、不做换算（技术事实文档 8.2）：
+    // av1_nvenc 的 -cq 是 0–63，av1_amf 的 QP 是 0–255（qindex）。按 0–51 的数值给会接近无损，体积与源相当
+    match id {
+        EncoderId::Av1Nvenc => return t(24, 30, 35, 40),
+        EncoderId::Av1Amf => return t(96, 120, 140, 160),
+        _ => {}
+    }
     match family(id) {
         Family::X265 => t(16, 20, 23, 27),
         Family::X264 => t(15, 18, 21, 25),
@@ -58,6 +65,11 @@ pub struct QualityMeta {
 
 pub fn quality_meta(id: EncoderId) -> QualityMeta {
     let m = |param, min, max, lower_is_better| QualityMeta { param, min, max, lower_is_better };
+    match id {
+        EncoderId::Av1Nvenc => return m("CQ", 0, 63, true),
+        EncoderId::Av1Amf => return m("QP", 0, 255, true),
+        _ => {}
+    }
     match family(id) {
         Family::X265 | Family::X264 => m("CRF", 0, 51, true),
         Family::SvtAv1 => m("CRF", 0, 63, true),
@@ -218,6 +230,39 @@ mod tests {
         assert_eq!(quality_value(EncoderId::HevcNvenc, QualityTier::High), 23);
         assert_eq!(quality_value(EncoderId::HevcQsv, QualityTier::High), 21);
         assert!(!quality_meta(EncoderId::HevcVideotoolbox).lower_is_better);
+        // AV1 硬件编码器的刻度与同家族不同
+        assert_eq!(
+            (quality_meta(EncoderId::Av1Nvenc).max, quality_value(EncoderId::Av1Nvenc, QualityTier::High)),
+            (63, 30)
+        );
+        assert_eq!(
+            (quality_meta(EncoderId::Av1Amf).max, quality_value(EncoderId::Av1Amf, QualityTier::High)),
+            (255, 120)
+        );
+    }
+
+    /// 每个编码器每一档的数值都落在它自己的刻度里，且越往"小体积"越省：
+    /// 刻度错配（例如把 0–51 的数值给 0–63 的编码器）会让某一档接近无损、体积与源相当
+    #[test]
+    fn every_tier_sits_inside_its_encoders_scale() {
+        use QualityTier::*;
+        for id in EncoderId::ALL {
+            let meta = quality_meta(id);
+            let v: Vec<i32> = [Lossless, High, Standard, Small].into_iter().map(|t| quality_value(id, t)).collect();
+            assert!(
+                v.iter().all(|q| (meta.min..=meta.max).contains(q)),
+                "{id:?}: {v:?} 不在 {}–{}",
+                meta.min,
+                meta.max
+            );
+            let ordered = v.windows(2).all(|w| if meta.lower_is_better { w[0] < w[1] } else { w[0] > w[1] });
+            assert!(ordered, "{id:?}: {v:?}");
+            // 高画质档不应落在刻度最细的一成里（那是近乎无损的区间）
+            let span = f64::from(meta.max - meta.min);
+            let high = f64::from(v[1] - meta.min) / span;
+            let fine = if meta.lower_is_better { high } else { 1.0 - high };
+            assert!(fine > 0.1, "{id:?}: 高画质档 {} 在刻度 {}–{} 里太细", v[1], meta.min, meta.max);
+        }
     }
 
     #[test]
